@@ -1,6 +1,6 @@
 # 钢铁蜂巢
 
-这是一个基于 `pygame` 的俯视角门切房肉鸽原型工程，项目根目录位于 `T:/gameV1`。
+这是一个基于 `pygame` 的俯视角门切房肉鸽原型工程，项目根目录为当前仓库根目录。
 
 ## 当前玩法
 
@@ -34,10 +34,13 @@
 ## 代码结构
 
 ```text
-T:/gameV1
+.
 ├─ main.py
 ├─ README.md
 ├─ CHANGELOG.md
+├─ requirements.txt
+├─ highscore.json
+├─ gameV1.spec
 └─ game/
    ├─ game.py          # 主循环、战斗、房间切换、UI
    ├─ map_system.py    # 地图生成、布局拼接、房间模板
@@ -50,14 +53,14 @@ T:/gameV1
 ## 运行
 
 ```powershell
-cd T:/gameV1
+cd <repo-root>
 python main.py
 ```
 
 安装依赖：
 
 ```powershell
-pip install pygame
+pip install -r requirements.txt
 ```
 
 ## 操作说明
