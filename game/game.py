@@ -97,7 +97,7 @@ class RoomState:
 class Game:
     def __init__(self) -> None:
         pygame.init()
-        pygame.display.set_caption("閽㈤搧铚傚发")
+        pygame.display.set_caption("钢铁蜂巢")
         self.screen = pygame.display.set_mode((config.WIDTH, config.HEIGHT))
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(
@@ -204,7 +204,7 @@ class Game:
         self.reward_choices: list[Upgrade] = []
         self.supply_choices: list[SupplyOption] = list(SUPPLY_OPTIONS)
         self.current_score = 0
-        self.message = "閫夋嫨鍏冲崱銆佹満浣撲笌姝﹀櫒锛屽噯澶囦笅娼滈挗閾佽渹宸?
+        self.message = "选择关卡、机体与武器，准备下潜钢铁蜂巢"
         self.title_panel_scroll = 0.0
         self.title_panel_scroll_target = 0.0
 
@@ -634,7 +634,7 @@ class Game:
         self.explosion_waves.clear()
         self.floaters.clear()
         self.invalidate_navigation_fields()
-        self.message = f"杩涘叆绗?{self.floor_index} 灞?
+        self.message = f"进入第 {self.floor_index} 层"
         if self.floor_map is None:
             return
         self.enter_room(self.floor_map.start_room_id, None)
@@ -705,19 +705,19 @@ class Game:
                 and not room_state.resolved
             ):
                 room_state.doors_locked = bool(room_state.enemies)
-            self.message = f"绗?{self.floor_index} 灞?路 {self.room_type_label(room_state.room_type)}"
+            self.message = f"第 {self.floor_index} 层 · {self.room_type_label(room_state.room_type)}"
 
     def prepare_room_state(self, room_state: RoomState) -> None:
         arena = self.arena_rect()
         room_state.doors_locked = False
         if room_state.room_type == "start":
-            self.message = f"绗?{self.floor_index} 灞傝捣濮嬮棿"
+            self.message = f"第 {self.floor_index} 层起始间"
             return
         if room_state.room_type == "shop":
-            self.message = f"绗?{self.floor_index} 灞?路 鍟嗗簵鎴?
+            self.message = f"第 {self.floor_index} 层 · 商店房"
             return
         if room_state.room_type == "treasure":
-            self.message = f"绗?{self.floor_index} 灞?路 瀹濈鎴?
+            self.message = f"第 {self.floor_index} 层 · 宝箱房"
             return
 
         room_state.encounter_spawned = True
@@ -726,21 +726,21 @@ class Game:
         self.spawn_room_pickups(arena)
         self.populate_room_enemies(room_state, arena)
         self.message = (
-            f"绗?{self.floor_index} 灞?路 {self.room_type_label(room_state.room_type)}"
+            f"第 {self.floor_index} 层 · {self.room_type_label(room_state.room_type)}"
         )
 
     def populate_room_enemies(self, room_state: RoomState, arena: pygame.Rect) -> None:
         room_state.enemies.clear()
         theme = room_state.layout.theme
         shooter_cap = 1 if room_state.difficulty <= 5 else 2
-        if theme == "鍙嶅簲鍫嗗":
+        if theme == "反应堆室":
             shooter_cap += 1
         shooter_count = 0
         if room_state.room_type == "combat":
             count = 4 + room_state.difficulty * 2
-            if theme == "寮€闃旇溅闂?:
+            if theme == "开阔车间":
                 count += 1
-            elif theme == "灏侀攣澹佸瀿":
+            elif theme == "封锁壁垒":
                 count = max(4, count - 1)
             for _ in range(count):
                 enemy = self.make_enemy(arena)
@@ -751,7 +751,7 @@ class Game:
 
         if room_state.room_type == "elite":
             count = 3 + room_state.difficulty
-            if theme == "搴熸枡鍫嗗満":
+            if theme == "废料堆场":
                 count += 1
             for idx in range(count):
                 enemy = self.make_enemy(arena)
@@ -767,7 +767,7 @@ class Game:
         if room_state.room_type == "boss":
             room_state.enemies.append(self.make_boss(arena))
             add_count = 2 + max(0, room_state.difficulty // 3)
-            if theme == "灏侀攣澹佸瀿":
+            if theme == "封锁壁垒":
                 add_count += 1
             for idx in range(add_count):
                 enemy = self.make_enemy(arena)
@@ -780,9 +780,9 @@ class Game:
             self.inject_theme_enemies(room_state, arena)
 
     def themed_enemy_kind(self, theme: str) -> str | None:
-        if theme == "搴熸枡鍫嗗満":
+        if theme == "废料堆场":
             return "toxic_bloater"
-        if theme == "鍙嶅簲鍫嗗":
+        if theme == "反应堆室":
             return "reactor_bomber"
         return None
 
@@ -963,7 +963,7 @@ class Game:
                         config.HEAL_PICKUP_RADIUS,
                         "heal",
                         config.HEAL_COLOR,
-                        "琛€鍖?,
+                        "血包",
                     )
                 )
             elif roll < 0.70:
@@ -974,7 +974,7 @@ class Game:
                         config.ITEM_PICKUP_RADIUS,
                         "shield",
                         config.SHIELD_COLOR,
-                        "鎶ょ浘",
+                        "护盾",
                     )
                 )
             else:
@@ -985,7 +985,7 @@ class Game:
                         config.ITEM_PICKUP_RADIUS,
                         "item",
                         config.ITEM_COLOR,
-                        "閬撳叿",
+                        "道具",
                     )
                 )
 
@@ -1036,14 +1036,14 @@ class Game:
 
     def room_type_label(self, room_type: str) -> str:
         labels = {
-            "start": "璧峰闂?,
-            "combat": "鎴樻枟闂?,
-            "elite": "绮捐嫳闂?,
-            "shop": "鍟嗗簵鎴?,
-            "treasure": "瀹濈鎴?,
-            "boss": "棣栭鎴?,
+            "start": "起始间",
+            "combat": "战斗间",
+            "elite": "精英间",
+            "shop": "商店房",
+            "treasure": "宝箱房",
+            "boss": "首领房",
         }
-        return labels.get(room_type, "鎴樻枟鍖?)
+        return labels.get(room_type, "战斗区")
 
     def is_safe_feature_position(
         self,
@@ -1305,7 +1305,7 @@ class Game:
             if self.weapon_mode == "laser":
                 self.player_damage *= 1.06
                 self.player_beam_width = max(10, self.player_beam_width - 1)
-                applied_name = f"{upgrade.name}锛堣浆鍖栦负鑱氱劍澧炵泭锛?
+                applied_name = f"{upgrade.name}（转化为聚焦增益）"
             else:
                 self.player_spread = max(0.004, self.player_spread * 0.82)
         elif upgrade.key == "crit_rate":
@@ -1325,18 +1325,18 @@ class Game:
         elif upgrade.key == "pierce":
             if self.weapon_mode == "laser":
                 self.player_damage += 2
-                applied_name = f"{upgrade.name}锛堣浆鍖栦负婵€鍏変激瀹?+2锛?
+                applied_name = f"{upgrade.name}（转化为激光伤害 +2）"
             else:
                 self.bullet_pierce += 1
         elif upgrade.key == "multishot":
             if self.weapon_mode == "laser":
                 self.player_beam_width += 3
-                applied_name = f"{upgrade.name}锛堣浆鍖栦负婵€鍏夊搴?+3锛?
+                applied_name = f"{upgrade.name}（转化为激光宽度 +3）"
             elif self.multishot < self.multishot_cap():
                 self.multishot += 1
             else:
                 self.player_damage += 2
-                applied_name = f"{upgrade.name}锛堣浆鍖栦负鐏姏 +2锛?
+                applied_name = f"{upgrade.name}（转化为火力 +2）"
         elif upgrade.key == "shotgun_range":
             if self.is_shotgun_weapon() and not self.shotgun_range_cap_reached():
                 self.shotgun_range_bonus += config.SHOTGUN_RANGE_STEP
@@ -1348,7 +1348,7 @@ class Game:
                     0.08, self.player_shotgun_spread - 0.02
                 )
             else:
-                applied_name = f"{upgrade.name}锛堝綋鍓嶆鍣ㄤ笉鍙敤锛?
+                applied_name = f"{upgrade.name}（当前武器不可用）"
         elif upgrade.key == "magnet":
             self.pickup_radius += 16
         elif upgrade.key == "pulse":
@@ -1367,11 +1367,11 @@ class Game:
             if self.player_bullet_bounces < self.ricochet_cap():
                 self.player_bullet_bounces += 1
             else:
-                applied_name = f"{upgrade.name}锛堝凡杈句笂闄愶級"
+                applied_name = f"{upgrade.name}（已达上限）"
         elif upgrade.key == "pulse_radius":
             self.pulse_radius += 22
         self.mode = "playing"
-        self.message = f"宸茶幏寰?{applied_name}"
+        self.message = f"已获得 {applied_name}"
         return applied_name
 
     def claim_reward(self, upgrade: Upgrade) -> None:
@@ -1380,7 +1380,7 @@ class Game:
             self.current_room_state.chest_opened = True
             self.current_room_state.resolved = True
             self.reward_source = None
-            self.message = f"瀹濈鑾峰緱 {applied_name}"
+            self.message = f"宝箱获得 {applied_name}"
             return
         self.reward_source = None
 
@@ -1397,7 +1397,7 @@ class Game:
             FloatingText(self.player_pos.copy(), option.name, config.PLAYER_COLOR, 0.8)
         )
         self.mode = "playing"
-        self.message = f"宸茶幏寰?{option.name}"
+        self.message = f"已获得 {option.name}"
 
     def get_choice_rects(self) -> list[pygame.Rect]:
         start_x = 180
@@ -1459,7 +1459,7 @@ class Game:
         if obstacle in self.obstacles:
             self.obstacles.remove(obstacle)
         self.floaters.append(
-            FloatingText(impact_pos, "鎺╀綋鐮村潖", config.ITEM_COLOR, 0.55)
+            FloatingText(impact_pos, "掩体破坏", config.ITEM_COLOR, 0.55)
         )
         debris_color = (
             obstacle.border_color
@@ -1483,7 +1483,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "credit",
                     config.CREDIT_COLOR,
-                    "鏅剁墖",
+                    "晶片",
                 )
             )
         self.handle_destroyed_obstacle(obstacle, impact_pos)
@@ -1568,9 +1568,9 @@ class Game:
         )
         tag = getattr(obstacle, "tag", "normal")
         if tag == "normal":
-            if theme == "鍙嶅簲鍫嗗":
+            if theme == "反应堆室":
                 tag = "reactor"
-            elif theme == "搴熸枡鍫嗗満":
+            elif theme == "废料堆场":
                 tag = "toxic"
         if tag == "reactor" or (
             tag == "normal" and theme == "\u53cd\u5e94\u5806\u5ba4"
@@ -1590,7 +1590,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     impact_pos.copy(),
-                    f"鍙嶅簲鐖嗚 {int(blast_radius)}",
+                    f"反应爆裂 {int(blast_radius)}",
                     config.BULLET_SHOCK_COLOR,
                     0.6,
                 )
@@ -1628,7 +1628,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     impact_pos.copy(),
-                    f"姣掓皵娉勯湶 {int(profile.radius)}",
+                    f"毒气泄露 {int(profile.radius)}",
                     (148, 220, 118),
                     0.6,
                 )
@@ -1923,7 +1923,7 @@ class Game:
                 if self.mode == "floor_confirm":
                     if event.key == pygame.K_ESCAPE:
                         self.mode = "playing"
-                        self.message = "宸插彇娑堝墠寰€涓嬩竴灞?
+                        self.message = "已取消前往下一层"
                     elif event.key in (pygame.K_e, pygame.K_RETURN, pygame.K_SPACE):
                         self.advance_floor()
                     continue
@@ -2035,13 +2035,13 @@ class Game:
             if offer is None:
                 return
             if offer.sold:
-                self.message = f"{offer.name} 宸插敭鍑?
+                self.message = f"{offer.name} 已售出"
                 return
             if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(offer.key):
-                self.message = f"{offer.name} 褰撳墠宸茶揪涓婇檺"
+                self.message = f"{offer.name} 当前已达上限"
                 return
             if self.credits < offer.cost:
-                self.message = f"鏅剁墖涓嶈冻锛歿offer.cost}"
+                self.message = f"晶片不足：{offer.cost}"
                 return
             self.credits -= offer.cost
             offer.sold = True
@@ -2060,7 +2060,7 @@ class Game:
             portal_pos = self.get_room_feature_anchor(room)
             if self.player_pos.distance_to(portal_pos) <= 76:
                 self.mode = "floor_confirm"
-                self.message = f"纭鍓嶅線绗?{self.floor_index + 1} 灞?
+                self.message = f"确认前往第 {self.floor_index + 1} 层"
                 self.play_sound("ui_click")
 
     def get_nearby_shop_offer(self) -> ShopOffer | None:
@@ -2075,27 +2075,27 @@ class Game:
     def apply_shop_offer(self, offer: ShopOffer) -> None:
         if offer.key in UPGRADE_KEYS:
             if not self.is_upgrade_available(offer.key):
-                self.message = f"{offer.name} 褰撳墠宸茶揪涓婇檺"
+                self.message = f"{offer.name} 当前已达上限"
                 offer.sold = False
                 return
             applied_name = self.apply_upgrade(
                 Upgrade(offer.key, offer.name, offer.description)
             )
-            self.message = f"宸茶喘涔?{applied_name}"
+            self.message = f"已购买 {applied_name}"
             return
         elif offer.key == "repair":
             self.player_hp = min(self.player_max_hp, self.player_hp + 40)
             self.floaters.append(
-                FloatingText(self.player_pos.copy(), "+40 鐢熷懡", config.HEAL_COLOR, 0.8)
+                FloatingText(self.player_pos.copy(), "+40 生命", config.HEAL_COLOR, 0.8)
             )
         elif offer.key == "shield_charge":
             self.player_shield = min(self.player_max_shield, self.player_shield + 30)
             self.floaters.append(
                 FloatingText(
-                    self.player_pos.copy(), "+30 鎶ょ浘", config.SHIELD_COLOR, 0.8
+                    self.player_pos.copy(), "+30 护盾", config.SHIELD_COLOR, 0.8
                 )
             )
-        self.message = f"宸茶喘涔?{offer.name}"
+        self.message = f"已购买 {offer.name}"
 
     def resolve_current_room(self) -> None:
         room = self.current_room_state
@@ -2108,13 +2108,13 @@ class Game:
         self.rooms_cleared += 1
         if room.room_type == "elite":
             self.spawn_resolution_pickups("elite")
-            self.message = "绮捐嫳鎴垮凡娓呯┖锛屾埧闂ㄥ凡寮€鍚?
+            self.message = "精英房已清空，房门已开启"
         elif room.room_type == "boss":
             room.exit_active = True
             self.spawn_resolution_pickups("boss")
-            self.message = "棣栭宸插嚮璐ワ紝浼犻€侀棬宸插惎鍔?
+            self.message = "首领已击败，传送门已启动"
         else:
-            self.message = "鍖哄煙宸叉竻绌猴紝鎴块棬宸插紑鍚?
+            self.message = "区域已清空，房门已开启"
 
     def spawn_resolution_pickups(self, reward_type: str) -> None:
         if self.current_room_state is None:
@@ -2128,7 +2128,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "shield",
                     config.SHIELD_COLOR,
-                    "鎶ょ浘",
+                    "护盾",
                 )
             )
             self.pickups.append(
@@ -2138,7 +2138,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "credit",
                     config.CREDIT_COLOR,
-                    "鏅剁墖",
+                    "晶片",
                 )
             )
         elif reward_type == "boss":
@@ -2149,7 +2149,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "shield",
                     config.SHIELD_COLOR,
-                    "鎶ょ浘",
+                    "护盾",
                 )
             )
             self.pickups.append(
@@ -2159,7 +2159,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "credit",
                     config.CREDIT_COLOR,
-                    "鏅剁墖",
+                    "晶片",
                 )
             )
             self.pickups.append(
@@ -2169,7 +2169,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "item",
                     config.ITEM_COLOR,
-                    "閬撳叿",
+                    "道具",
                 )
             )
 
@@ -2188,18 +2188,18 @@ class Game:
             offer = self.get_nearby_shop_offer()
             if offer is not None:
                 if offer.sold:
-                    return f"{offer.name}锛堝凡鍞嚭锛?
+                    return f"{offer.name}（已售出）"
                 if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(
                     offer.key
                 ):
-                    return f"{offer.name}锛堝凡杈句笂闄愶級"
-                return f"E 璐拱 {offer.name} - {offer.cost} 鏅剁墖"
+                    return f"{offer.name}（已达上限）"
+                return f"E 购买 {offer.name} - {offer.cost} 晶片"
         elif room.room_type == "treasure" and not room.chest_opened:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 70:
-                return "E 鎵撳紑瀹濈"
+                return "E 打开宝箱"
         elif room.room_type == "boss" and room.exit_active:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 76:
-                return "E 鍚姩涓嬪眰浼犻€?
+                return "E 启动下层传送"
         return ""
 
     def check_door_transition(self) -> None:
@@ -2231,11 +2231,11 @@ class Game:
         self.laser_traces.clear()
         self.explosion_waves.clear()
         self.floaters.clear()
-        self.message = f"姝ｅ湪涓嬫綔鑷崇 {self.floor_transition_target} 灞?
+        self.message = f"正在下潜至第 {self.floor_transition_target} 层"
 
     def finish_floor_advance(self) -> None:
         self.floor_index = self.floor_transition_target
-        self.message = f"杩涘叆绗?{self.floor_index} 灞?
+        self.message = f"进入第 {self.floor_index} 层"
         self.build_floor()
 
     def update_floor_transition(self, dt: float) -> None:
@@ -2334,7 +2334,7 @@ class Game:
         self.iframes = max(self.iframes, 0.3)
         self.dash_timer = self.dash_cooldown
         self.floaters.append(
-            FloatingText(self.player_pos.copy(), "鍐插埡", config.PLAYER_COLOR, 0.35)
+            FloatingText(self.player_pos.copy(), "冲刺", config.PLAYER_COLOR, 0.35)
         )
 
     def try_pulse(self) -> None:
@@ -2368,7 +2368,7 @@ class Game:
         self.floaters.append(
             FloatingText(
                 self.player_pos.copy(),
-                f"鑴夊啿鍛戒腑 {hits}",
+                f"脉冲命中 {hits}",
                 config.BULLET_SHOCK_COLOR,
                 0.6,
             )
@@ -2706,7 +2706,7 @@ class Game:
         self.floaters.append(
             FloatingText(
                 origin.copy(),
-                f"寮瑰箷鐐歌 x{bullet_count}",
+                f"弹幕炸裂 x{bullet_count}",
                 config.BULLET_BARREL_COLOR,
                 0.55,
             )
@@ -2783,7 +2783,7 @@ class Game:
                     )
                     floater_color = config.CRIT_COLOR if crit else color
                     floater_text = (
-                        f"鏆村嚮 {int(hit_damage)}" if crit else str(int(hit_damage))
+                        f"暴击 {int(hit_damage)}" if crit else str(int(hit_damage))
                     )
                     self.floaters.append(
                         FloatingText(
@@ -2796,7 +2796,7 @@ class Game:
                 self.floaters.append(
                     FloatingText(
                         origin.copy() + pygame.Vector2(0, -22),
-                        f"婵€鍏夊懡涓?{beam_hits}",
+                        f"激光命中 {beam_hits}",
                         color,
                         0.35,
                     )
@@ -3013,7 +3013,7 @@ class Game:
                             )
                         color = config.CRIT_COLOR if bullet.crit else (255, 220, 180)
                         text = (
-                            f"鏆村嚮 {int(bullet.damage)}"
+                            f"暴击 {int(bullet.damage)}"
                             if bullet.crit
                             else str(int(bullet.damage))
                         )
@@ -3066,7 +3066,7 @@ class Game:
             )
             self.floaters.append(
                 FloatingText(
-                    enemy.pos.copy(), "姣掗浘鎵╂暎", config.TOXIC_ENEMY_COLOR, 0.65
+                    enemy.pos.copy(), "毒雾扩散", config.TOXIC_ENEMY_COLOR, 0.65
                 )
             )
         elif enemy.kind == "reactor_bomber":
@@ -3083,7 +3083,7 @@ class Game:
             )
             self.floaters.append(
                 FloatingText(
-                    enemy.pos.copy(), "鍙嶅簲鐖嗙牬", config.REACTOR_ENEMY_COLOR, 0.65
+                    enemy.pos.copy(), "反应爆破", config.REACTOR_ENEMY_COLOR, 0.65
                 )
             )
             self.apply_explosion_damage(
@@ -3101,7 +3101,7 @@ class Game:
                 config.XP_PICKUP_RADIUS,
                 "xp",
                 config.XP_COLOR,
-                "缁忛獙",
+                "经验",
             )
         )
         credit_amount = enemy_credit_drop(self.room_index, self.floor_index, enemy.kind)
@@ -3112,7 +3112,7 @@ class Game:
                 config.ITEM_PICKUP_RADIUS,
                 "credit",
                 config.CREDIT_COLOR,
-                "鏅剁墖",
+                "晶片",
             )
         )
         extra_roll = self.rng.random()
@@ -3124,7 +3124,7 @@ class Game:
                     config.HEAL_PICKUP_RADIUS,
                     "heal",
                     config.HEAL_COLOR,
-                    "琛€鍖?,
+                    "血包",
                 )
             )
         elif extra_roll < 0.18:
@@ -3135,7 +3135,7 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "shield",
                     config.SHIELD_COLOR,
-                    "鎶ょ浘",
+                    "护盾",
                 )
             )
         elif extra_roll < 0.26:
@@ -3146,12 +3146,12 @@ class Game:
                     config.ITEM_PICKUP_RADIUS,
                     "item",
                     config.ITEM_COLOR,
-                    "閬撳叿",
+                    "道具",
                 )
             )
         self.floaters.append(
             FloatingText(
-                enemy.pos.copy(), f"+{enemy.xp_reward} 缁忛獙", config.XP_COLOR, 0.7
+                enemy.pos.copy(), f"+{enemy.xp_reward} 经验", config.XP_COLOR, 0.7
             )
         )
         self.spawn_particles(
@@ -3241,7 +3241,7 @@ class Game:
         self.floaters.append(
             FloatingText(
                 enemy.pos.copy() + pygame.Vector2(0, -38),
-                "鎾煎湴",
+                "撼地",
                 config.BULLET_SHOCK_COLOR,
                 0.7,
             )
@@ -3299,7 +3299,7 @@ class Game:
         self.floaters.append(
             FloatingText(
                 enemy.pos.copy() + pygame.Vector2(0, -38),
-                "闇囪崱榻愬皠",
+                "震荡齐射",
                 config.BULLET_ELITE_COLOR,
                 0.7,
             )
@@ -3647,7 +3647,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     self.player_pos.copy(),
-                    f"+{pickup.amount} 缁忛獙",
+                    f"+{pickup.amount} 经验",
                     config.XP_COLOR,
                     0.45,
                 )
@@ -3661,7 +3661,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     self.player_pos.copy(),
-                    f"+{pickup.amount} 鐢熷懡",
+                    f"+{pickup.amount} 生命",
                     config.HEAL_COLOR,
                     0.6,
                 )
@@ -3673,7 +3673,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     self.player_pos.copy(),
-                    f"+{pickup.amount} 鎶ょ浘",
+                    f"+{pickup.amount} 护盾",
                     config.SHIELD_COLOR,
                     0.6,
                 )
@@ -3683,25 +3683,25 @@ class Game:
             self.credits += gained
             self.floaters.append(
                 FloatingText(
-                    self.player_pos.copy(), f"+{gained} 鏅剁墖", config.CREDIT_COLOR, 0.6
+                    self.player_pos.copy(), f"+{gained} 晶片", config.CREDIT_COLOR, 0.6
                 )
             )
         elif pickup.kind == "item":
             effect = self.rng.choice(("damage", "speed", "cooldown", "shield"))
             if effect == "damage":
                 self.player_damage += 2
-                text = "閬撳叿锛氱伀鍔?+2"
+                text = "道具：火力 +2"
             elif effect == "speed":
                 self.player_speed += 8
-                text = "閬撳叿锛氱Щ閫?+8"
+                text = "道具：移速 +8"
             elif effect == "shield":
                 self.player_shield = min(
                     self.player_max_shield, self.player_shield + 12
                 )
-                text = "閬撳叿锛氭姢鐩?+12"
+                text = "道具：护盾 +12"
             else:
                 self.fire_cooldown = max(0.11, self.fire_cooldown * 0.98)
-                text = "閬撳叿锛氬皠閫熸彁鍗?
+                text = "道具：射速提升"
             self.floaters.append(
                 FloatingText(self.player_pos.copy(), text, config.ITEM_COLOR, 0.8)
             )
@@ -4124,7 +4124,7 @@ class Game:
         if self.room_layout is None or self.current_room_state is None:
             return
         locked = self.current_room_state.doors_locked
-        door_marks = {"north": "鈫?, "east": "鈫?, "south": "鈫?, "west": "鈫?}
+        door_marks = {"north": "↑", "east": "→", "south": "↓", "west": "←"}
         for direction, rect in self.room_layout.screen_doors.items():
             fill = (155, 66, 66) if locked else config.DOOR_FILL
             glow = (210, 96, 96) if locked else config.DOOR_GLOW
@@ -4301,17 +4301,17 @@ class Game:
                 )
                 pygame.draw.circle(self.screen, orb_color, offer.pos, 18)
                 name = self.small_font.render(offer.name, True, config.TEXT_COLOR)
-                cost = self.small_font.render(f"{offer.cost} 鏅剁墖", True, border)
+                cost = self.small_font.render(f"{offer.cost} 晶片", True, border)
                 self.screen.blit(
                     name, name.get_rect(center=(panel.centerx, panel.top + 48))
                 )
-                label = "宸插敭鍑? if offer.sold else cost
+                label = "已售出" if offer.sold else cost
                 if not offer.sold:
                     self.screen.blit(
                         cost, cost.get_rect(center=(panel.centerx, panel.bottom - 18))
                     )
                 else:
-                    sold = self.small_font.render("宸插敭鍑?, True, config.MUTED_TEXT)
+                    sold = self.small_font.render("已售出", True, config.MUTED_TEXT)
                     self.screen.blit(
                         sold, sold.get_rect(center=(panel.centerx, panel.bottom - 18))
                     )
@@ -4333,7 +4333,7 @@ class Game:
             pos = self.get_room_feature_anchor(room)
             pygame.draw.circle(self.screen, (110, 170, 255), pos, 34, 3)
             pygame.draw.circle(self.screen, (70, 120, 210), pos, 18, 2)
-            text = self.small_font.render("鍑哄彛", True, config.TEXT_COLOR)
+            text = self.small_font.render("出口", True, config.TEXT_COLOR)
             self.screen.blit(text, text.get_rect(center=(pos.x, pos.y + 54)))
 
     def draw_hud_panel(
@@ -4418,7 +4418,7 @@ class Game:
         room_label = (
             self.room_type_label(self.current_room_state.room_type)
             if self.current_room_state is not None
-            else "鏈繘鍏ユ埧闂?
+            else "未进入房间"
         )
         room_kind = (
             self.current_room_state.room_type
@@ -4441,11 +4441,11 @@ class Game:
         self.draw_hud_panel(detail_panel, border_color=config.CARD_HILITE)
 
         self.screen.blit(
-            self.tiny_font.render("浣滄垬闈㈡澘", True, config.MUTED_TEXT),
+            self.tiny_font.render("作战面板", True, config.MUTED_TEXT),
             (status_panel.left + 12, status_panel.top + 10),
         )
         floor_label = self.small_font.render(
-            f"绗?{self.floor_index} 灞?, True, config.TEXT_COLOR
+            f"第 {self.floor_index} 层", True, config.TEXT_COLOR
         )
         self.screen.blit(floor_label, (status_panel.left + 12, status_panel.top + 24))
 
@@ -4459,7 +4459,7 @@ class Game:
         meter_width = status_panel.width - 24
         self.draw_hud_meter(
             pygame.Rect(status_panel.left + 12, status_panel.top + 52, meter_width, 15),
-            "鐢熷懡",
+            "生命",
             hp_ratio,
             f"{int(self.player_hp)}/{int(self.player_max_hp)}",
             (80, 220, 145),
@@ -4467,7 +4467,7 @@ class Game:
         )
         self.draw_hud_meter(
             pygame.Rect(status_panel.left + 12, status_panel.top + 73, meter_width, 13),
-            "鎶ょ浘",
+            "护盾",
             shield_ratio,
             f"{int(self.player_shield)}/{int(self.player_max_shield)}",
             (112, 198, 255),
@@ -4475,7 +4475,7 @@ class Game:
         )
         self.draw_hud_meter(
             pygame.Rect(status_panel.left + 12, status_panel.top + 92, meter_width, 13),
-            "缁忛獙",
+            "经验",
             xp_ratio,
             f"{self.xp}/{self.xp_to_level}",
             (98, 168, 255),
@@ -4486,10 +4486,10 @@ class Game:
         chip_width = (status_panel.width - 24 - chip_gap * 3) // 4
         chip_y = status_panel.bottom - 26
         chip_specs = (
-            ("绛夌骇", str(self.level), config.XP_COLOR),
-            ("鏅剁墖", str(self.credits), config.CREDIT_COLOR),
-            ("鍑绘潃", str(self.kills), config.PLAYER_COLOR),
-            ("娓呮埧", str(self.rooms_cleared), config.SHIELD_COLOR),
+            ("等级", str(self.level), config.XP_COLOR),
+            ("晶片", str(self.credits), config.CREDIT_COLOR),
+            ("击杀", str(self.kills), config.PLAYER_COLOR),
+            ("清房", str(self.rooms_cleared), config.SHIELD_COLOR),
         )
         for idx, (label, value, accent) in enumerate(chip_specs):
             chip_rect = pygame.Rect(
@@ -4501,7 +4501,7 @@ class Game:
             self.draw_hud_chip(chip_rect, label, value, accent)
 
         self.screen.blit(
-            self.tiny_font.render("褰撳墠閮ㄧ讲", True, config.MUTED_TEXT),
+            self.tiny_font.render("当前部署", True, config.MUTED_TEXT),
             (detail_panel.left + 12, detail_panel.top + 9),
         )
         loadout_line = self.fit_text_line(
@@ -4516,18 +4516,18 @@ class Game:
 
         if self.weapon_mode == "laser":
             detail_text = (
-                f"浼ゅ {int(self.player_damage)} 路 闂撮殧 {self.fire_cooldown:.2f}s 路 瀹藉害 {self.player_beam_width}"
-                f" 路 鏆村嚮 {int(self.player_crit_chance * 100)}% 路 鍙嶅皠 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 宽度 {self.player_beam_width}"
+                f" · 暴击 {int(self.player_crit_chance * 100)}% · 反射 {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
         elif self.is_shotgun_weapon():
             detail_text = (
-                f"浼ゅ {int(self.player_damage)} 路 闂撮殧 {self.fire_cooldown:.2f}s 路 寮逛父 {self.player_shotgun_pellets}"
-                f" 路 璺濈 {self.player_projectile_ttl:.2f}s 路 鍙嶅脊 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 弹丸 {self.player_shotgun_pellets}"
+                f" · 距离 {self.player_projectile_ttl:.2f}s · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
         else:
             detail_text = (
-                f"浼ゅ {int(self.player_damage)} 路 闂撮殧 {self.fire_cooldown:.2f}s 路 鍑嗗害 {self.get_accuracy_rating()}%"
-                f" 路 绌块€?{self.bullet_pierce} 路 鏁ｅ皠 {self.multishot} 路 鍙嶅脊 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 准度 {self.get_accuracy_rating()}%"
+                f" · 穿透 {self.bullet_pierce} · 散射 {self.multishot} · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
         for idx, line in enumerate(
             self.wrap_text(detail_text, self.tiny_font, detail_panel.width - 24, 2)
@@ -4537,10 +4537,10 @@ class Game:
                 (detail_panel.left + 12, detail_panel.top + 44 + idx * 14),
             )
 
-        dash_text = "灏辩华" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
-        pulse_text = "灏辩华" if self.pulse_timer <= 0 else f"{self.pulse_timer:.1f}s"
+        dash_text = "就绪" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
+        pulse_text = "就绪" if self.pulse_timer <= 0 else f"{self.pulse_timer:.1f}s"
         skills = self.small_font.render(
-            f"鍐插埡 {dash_text}  路  鑴夊啿 {pulse_text}", True, config.MUTED_TEXT
+            f"冲刺 {dash_text}  ·  脉冲 {pulse_text}", True, config.MUTED_TEXT
         )
         self.screen.blit(skills, (16, config.HEIGHT - 34))
         prompt = self.current_interaction_prompt()
@@ -4582,7 +4582,7 @@ class Game:
                 pygame.draw.rect(
                     self.screen, (255, 255, 255), rect.inflate(6, 6), 2, border_radius=5
                 )
-        title = self.small_font.render("妤煎眰鍦板浘", True, config.MUTED_TEXT)
+        title = self.small_font.render("楼层地图", True, config.MUTED_TEXT)
         self.screen.blit(title, (panel.left + 12, panel.top + 8))
 
     def draw_overlay(self) -> None:
@@ -4600,14 +4600,14 @@ class Game:
             self.draw_supply_room()
         elif self.mode == "floor_confirm":
             self.draw_center_card(
-                "纭涓嬫綔",
-                f"鏄惁杩涘叆绗?{self.floor_index + 1} 灞傦紵",
-                "鎸?E / Enter 纭锛孍sc 鍙栨秷",
+                "确认下潜",
+                f"是否进入第 {self.floor_index + 1} 层？",
+                "按 E / Enter 确认，Esc 取消",
             )
         elif self.mode == "floor_transition":
             self.draw_floor_transition()
         elif self.room_clear_delay > 0:
-            title = "鎴樺埄鍝佸洖鏀朵腑" if self.pickups else "鍖哄煙宸叉竻绌?
+            title = "战利品回收中" if self.pickups else "区域已清空"
             surf = self.big_font.render(title, True, config.TEXT_COLOR)
             self.screen.blit(surf, surf.get_rect(center=(config.WIDTH / 2, 54)))
 
@@ -4637,16 +4637,16 @@ class Game:
         shade.fill((0, 0, 0, int(230 * fade)))
         self.screen.blit(shade, (0, 0))
         title = (
-            "涓嬫綔涓?.."
+            "下潜中..."
             if not self.floor_transition_switched
-            else f"绗?{self.floor_index} 灞?
+            else f"第 {self.floor_index} 层"
         )
         subtitle = (
-            f"姝ｅ湪杩涘叆绗?{self.floor_transition_target} 灞?
+            f"正在进入第 {self.floor_transition_target} 层"
             if not self.floor_transition_switched
-            else "鑸遍棬瑙ｉ攣锛屽噯澶囩户缁帹杩?
+            else "舱门解锁，准备继续推进"
         )
-        prompt = "璇风◢鍊?
+        prompt = "请稍候"
         panel = pygame.Rect(0, 0, 480, 210)
         panel.center = (config.WIDTH / 2, config.HEIGHT / 2)
         pygame.draw.rect(self.screen, config.PANEL, panel, border_radius=18)
@@ -4664,9 +4664,9 @@ class Game:
         shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 165))
         self.screen.blit(shade, (0, 0))
-        title = self.big_font.render("閫夋嫨澧炵泭", True, config.TEXT_COLOR)
+        title = self.big_font.render("选择增益", True, config.TEXT_COLOR)
         self.screen.blit(title, title.get_rect(center=(config.WIDTH / 2, 110)))
-        prompt = self.font.render("鎸?1 / 2 / 3 鎴栫偣鍑诲崱鐗?, True, config.MUTED_TEXT)
+        prompt = self.font.render("按 1 / 2 / 3 或点击卡片", True, config.MUTED_TEXT)
         self.screen.blit(prompt, prompt.get_rect(center=(config.WIDTH / 2, 150)))
         mouse_pos = pygame.mouse.get_pos()
         for idx, (upgrade, rect) in enumerate(
@@ -4690,11 +4690,11 @@ class Game:
         shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 155))
         self.screen.blit(shade, (0, 0))
-        title_text = "瀹濈濂栧姳" if self.reward_source == "treasure" else "濂栧姳鎴?
+        title_text = "宝箱奖励" if self.reward_source == "treasure" else "奖励房"
         sub_text = (
-            "鎵撳紑瀹濈鍚庨€夋嫨涓€涓己鍖栵細鐐瑰嚮鎴栨寜 1 / 2 / 3"
+            "打开宝箱后选择一个强化：点击或按 1 / 2 / 3"
             if self.reward_source == "treasure"
-            else "鍏嶈垂鑾峰緱涓€涓己鍖栵細鐐瑰嚮鎴栨寜 1 / 2 / 3"
+            else "免费获得一个强化：点击或按 1 / 2 / 3"
         )
         title = self.big_font.render(title_text, True, config.TEXT_COLOR)
         sub = self.font.render(sub_text, True, config.MUTED_TEXT)
@@ -4722,9 +4722,9 @@ class Game:
         shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 155))
         self.screen.blit(shade, (0, 0))
-        title = self.big_font.render("琛ョ粰鎴?, True, config.TEXT_COLOR)
+        title = self.big_font.render("补给房", True, config.TEXT_COLOR)
         sub = self.font.render(
-            "閫夋嫨涓€椤硅ˉ缁欙細鐐瑰嚮鎴栨寜 1 / 2 / 3", True, config.MUTED_TEXT
+            "选择一项补给：点击或按 1 / 2 / 3", True, config.MUTED_TEXT
         )
         self.screen.blit(title, title.get_rect(center=(config.WIDTH / 2, 102)))
         self.screen.blit(sub, sub.get_rect(center=(config.WIDTH / 2, 146)))
@@ -4847,13 +4847,13 @@ class Game:
                 self.screen, config.CARD_HILITE, deploy_card, 2, border_radius=14
             )
             self.screen.blit(
-                self.font.render("褰撳墠閮ㄧ讲", True, config.TEXT_COLOR),
+                self.font.render("当前部署", True, config.TEXT_COLOR),
                 (deploy_card.left + 14, deploy_card.top + 10),
             )
             deploy_lines = (
-                f"鍏冲崱锛歿self.selected_stage.name}",
-                f"鏈轰綋锛歿self.selected_character.name}",
-                f"姝﹀櫒锛歿self.selected_weapon.name}",
+                f"关卡：{self.selected_stage.name}",
+                f"机体：{self.selected_character.name}",
+                f"武器：{self.selected_weapon.name}",
             )
             for idx, line in enumerate(deploy_lines):
                 self.screen.blit(
@@ -4925,7 +4925,7 @@ class Game:
                 self.screen, config.CARD_HILITE, action_card, 2, border_radius=14
             )
             hint = self.small_font.render(
-                "纭閰嶇疆鍚庯紝鎸?Enter / Space 鎴栫偣鍑诲彸渚ф寜閽紑濮嬮儴缃?,
+                "确认配置后，按 Enter / Space 或点击右侧按钮开始部署",
                 True,
                 config.MUTED_TEXT,
             )
@@ -5013,7 +5013,7 @@ class Game:
                         border_radius=12,
                     )
                     badge_text = self.small_font.render(
-                        "宸查€夋嫨", True, config.TEXT_COLOR
+                        "已选择", True, config.TEXT_COLOR
                     )
                     self.screen.blit(
                         badge_text, badge_text.get_rect(center=active_badge.center)
@@ -5027,7 +5027,7 @@ class Game:
                 passive = (
                     option.passive
                     if hasattr(option, "passive")
-                    else f"璧峰闅惧害锛歿option.start_room}"
+                    else f"起始难度：{option.start_room}"
                 )
                 passive_lines = self.wrap_text(
                     passive, self.small_font, rect.width - 92, 2
@@ -5080,9 +5080,9 @@ class Game:
                 self.screen, config.CARD_HILITE, footer, 2, border_radius=16
             )
             hint_text = (
-                "婊氳疆 / 鈫戔啌 婊戝姩鍒楄〃锛屾暟瀛楅敭鍙洿鎺ラ€夋嫨"
+                "滚轮 / ↑↓ 滑动列表，数字键可直接选择"
                 if self.title_panel_uses_scroll()
-                else "鐐瑰嚮鍗＄墖鎴栨寜鏁板瓧閿珛鍗抽€夋嫨"
+                else "点击卡片或按数字键立即选择"
             )
             hint = self.small_font.render(hint_text, True, config.MUTED_TEXT)
             self.screen.blit(
@@ -5139,7 +5139,7 @@ class Game:
             self.floaters.append(
                 FloatingText(
                     self.player_pos.copy() + pygame.Vector2(0, -20),
-                    f"鎶ょ浘 -{int(absorbed)}",
+                    f"护盾 -{int(absorbed)}",
                     config.SHIELD_COLOR,
                     0.45,
                 )
@@ -5153,7 +5153,7 @@ class Game:
             self.player_hp = 0
             self.update_best_record()
             self.mode = "dead"
-            self.message = "淇″彿涓柇"
+            self.message = "信号中断"
 
     def get_enemy_navigation_target(
         self, pos: pygame.Vector2, radius: int
