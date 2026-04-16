@@ -287,7 +287,8 @@ def build_stitched_layout(
     obstacles: list[RoomObstacle] = []
     doorways: list[pygame.Rect] = []
     door_centers: dict[frozenset[Cell], pygame.Vector2] = {}
-    wall_thickness = 18
+    wall_thickness = 12
+    wall_overlap = 8
     door_size = 108 if template["family"] != "maze" else 82
 
     if template["family"] != "single":
@@ -305,11 +306,28 @@ def build_stitched_layout(
                 pair = frozenset((left, right))
                 if left in used_cells and right in used_cells and pair in linked_pairs:
                     door_top = _centered_span(y0, y1, door_size, rng)
-                    _append_wall_split_vertical(obstacles, doorways, door_centers, pair, x, y0, y1, door_top, door_size, wall_thickness)
+                    _append_wall_split_vertical(
+                        obstacles,
+                        doorways,
+                        door_centers,
+                        pair,
+                        x,
+                        y0,
+                        y1,
+                        door_top,
+                        door_size,
+                        wall_thickness,
+                        wall_overlap,
+                    )
                 else:
                     obstacles.append(
                         RoomObstacle(
-                            pygame.Rect(x - wall_thickness // 2, y0, wall_thickness, y1 - y0),
+                            pygame.Rect(
+                                x - wall_thickness // 2,
+                                y0 - wall_overlap,
+                                wall_thickness,
+                                y1 - y0 + wall_overlap * 2,
+                            ),
                             tag="wall",
                             fill_color=wall_fill,
                             border_color=wall_border,
@@ -329,11 +347,28 @@ def build_stitched_layout(
                 pair = frozenset((top, bottom))
                 if top in used_cells and bottom in used_cells and pair in linked_pairs:
                     door_left = _centered_span(x0, x1, door_size, rng)
-                    _append_wall_split_horizontal(obstacles, doorways, door_centers, pair, y, x0, x1, door_left, door_size, wall_thickness)
+                    _append_wall_split_horizontal(
+                        obstacles,
+                        doorways,
+                        door_centers,
+                        pair,
+                        y,
+                        x0,
+                        x1,
+                        door_left,
+                        door_size,
+                        wall_thickness,
+                        wall_overlap,
+                    )
                 else:
                     obstacles.append(
                         RoomObstacle(
-                            pygame.Rect(x0, y - wall_thickness // 2, x1 - x0, wall_thickness),
+                            pygame.Rect(
+                                x0 - wall_overlap,
+                                y - wall_thickness // 2,
+                                x1 - x0 + wall_overlap * 2,
+                                wall_thickness,
+                            ),
                             tag="wall",
                             fill_color=wall_fill,
                             border_color=wall_border,
@@ -431,16 +466,33 @@ def _append_wall_split_vertical(
     door_top: int,
     door_size: int,
     wall_thickness: int,
+    wall_overlap: int,
 ) -> None:
     wall_fill, wall_border = SPECIAL_TAG_COLORS["wall"]
-    top_rect = pygame.Rect(x - wall_thickness // 2, y0, wall_thickness, max(0, door_top - y0))
+    top_rect = pygame.Rect(
+        x - wall_thickness // 2,
+        y0 - wall_overlap,
+        wall_thickness,
+        max(0, door_top - y0 + wall_overlap),
+    )
     bottom_start = door_top + door_size
-    bottom_rect = pygame.Rect(x - wall_thickness // 2, bottom_start, wall_thickness, max(0, y1 - bottom_start))
+    bottom_rect = pygame.Rect(
+        x - wall_thickness // 2,
+        bottom_start,
+        wall_thickness,
+        max(0, y1 - bottom_start + wall_overlap),
+    )
     if top_rect.height > 0:
         obstacles.append(RoomObstacle(top_rect, tag="wall", fill_color=wall_fill, border_color=wall_border))
     if bottom_rect.height > 0:
         obstacles.append(RoomObstacle(bottom_rect, tag="wall", fill_color=wall_fill, border_color=wall_border))
-    door = pygame.Rect(x - wall_thickness // 2 + 3, door_top, wall_thickness - 6, door_size)
+    door_inset = max(2, wall_thickness // 4)
+    door = pygame.Rect(
+        x - wall_thickness // 2 + door_inset,
+        door_top,
+        max(2, wall_thickness - door_inset * 2),
+        door_size,
+    )
     doorways.append(door)
     door_centers[pair] = pygame.Vector2(door.center)
 
@@ -456,16 +508,33 @@ def _append_wall_split_horizontal(
     door_left: int,
     door_size: int,
     wall_thickness: int,
+    wall_overlap: int,
 ) -> None:
     wall_fill, wall_border = SPECIAL_TAG_COLORS["wall"]
-    left_rect = pygame.Rect(x0, y - wall_thickness // 2, max(0, door_left - x0), wall_thickness)
+    left_rect = pygame.Rect(
+        x0 - wall_overlap,
+        y - wall_thickness // 2,
+        max(0, door_left - x0 + wall_overlap),
+        wall_thickness,
+    )
     right_start = door_left + door_size
-    right_rect = pygame.Rect(right_start, y - wall_thickness // 2, max(0, x1 - right_start), wall_thickness)
+    right_rect = pygame.Rect(
+        right_start,
+        y - wall_thickness // 2,
+        max(0, x1 - right_start + wall_overlap),
+        wall_thickness,
+    )
     if left_rect.width > 0:
         obstacles.append(RoomObstacle(left_rect, tag="wall", fill_color=wall_fill, border_color=wall_border))
     if right_rect.width > 0:
         obstacles.append(RoomObstacle(right_rect, tag="wall", fill_color=wall_fill, border_color=wall_border))
-    door = pygame.Rect(door_left, y - wall_thickness // 2 + 3, door_size, wall_thickness - 6)
+    door_inset = max(2, wall_thickness // 4)
+    door = pygame.Rect(
+        door_left,
+        y - wall_thickness // 2 + door_inset,
+        door_size,
+        max(2, wall_thickness - door_inset * 2),
+    )
     doorways.append(door)
     door_centers[pair] = pygame.Vector2(door.center)
 

@@ -29,13 +29,14 @@ SHOP_OFFER_POOL = (
     ShopOfferTemplate("damage", "火力扩容", "武器伤害 +12%", 30),
     ShopOfferTemplate("rapid", "枪机校准", "射击冷却 -6%", 26),
     ShopOfferTemplate("accuracy", "瞄具微调", "子弹偏移 -18%，准度提升", 28),
+    ShopOfferTemplate("shotgun_range", "加长枪膛", "仅霰弹枪：飞行距离增加，扩散略微收束", 28),
     ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +6%", 30),
     ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +18%", 32),
     ShopOfferTemplate("speed", "动力靴组", "移动速度 +16", 24),
     ShopOfferTemplate("magnet", "磁环模组", "拾取范围 +16", 22),
     ShopOfferTemplate("enemy_bullet_slow", "迟滞电场", "敌方子弹速度 -12%", 28),
     ShopOfferTemplate("credit_boost", "回收协议", "晶片获取 +25%", 30),
-    ShopOfferTemplate("ricochet", "折射弹仓", "攻击获得 1 次反射", 34),
+    ShopOfferTemplate("ricochet", "折射弹仓", "攻击获得 1 次反射；激光最多可叠加至 3 次", 34),
 )
 
 
@@ -54,8 +55,25 @@ def scale_shop_cost(base_cost: int, floor_index: int, difficulty: int) -> int:
     return int(math.ceil(base_cost * (1.0 + floor_markup + difficulty_markup)))
 
 
+def enemy_attack_cooldown(kind: str, room_index: int, floor_index: int) -> float:
+    floor_bonus = max(0, floor_index - 1)
+    if kind == "laser":
+        return max(1.5, 2.28 - room_index * 0.03 - floor_bonus * 0.05)
+    if kind == "shooter":
+        return max(1.18, 2.24 - room_index * 0.028 - floor_bonus * 0.045)
+    if kind == "shotgunner":
+        return max(1.28, 1.92 - room_index * 0.018 - floor_bonus * 0.04)
+    if kind == "elite":
+        return max(1.45, 2.15 - room_index * 0.024 - floor_bonus * 0.05)
+    if kind == "boss":
+        return max(0.82, 1.42 - room_index * 0.02 - floor_bonus * 0.04)
+    return 0.0
+
+
 def enemy_credit_drop(room_index: int, floor_index: int, kind: str) -> int:
     amount = 4 + room_index // 4 + max(0, floor_index - 1)
+    if kind in {"toxic_bloater", "reactor_bomber"}:
+        amount += 1
     if kind == "elite":
         amount += 2
     elif kind == "boss":

@@ -41,6 +41,12 @@ class SupplyOption:
     description: str
 
 
+@dataclass(frozen=True)
+class UpgradeWeaponRule:
+    required_weapon_keys: frozenset[str] = frozenset()
+    required_weapon_tags: frozenset[str] = frozenset()
+
+
 UPGRADES = (
     Upgrade("damage", "重型弹匣", "武器伤害 +12%"),
     Upgrade("rapid", "热能枪机", "射击冷却 -6%"),
@@ -52,16 +58,34 @@ UPGRADES = (
     Upgrade("heal", "战地修补", "立即回复 22 生命"),
     Upgrade("shield_core", "相位护盾", "护盾上限 +10，并回复 14 护盾"),
     Upgrade("pierce", "穿甲弹头", "投射物穿透 +1"),
-    Upgrade("multishot", "双生锯齿", "追加 1 组侧射"),
+    Upgrade("multishot", "侧翼弹夹", "每次只追加 1 条额外弹道"),
+    Upgrade("shotgun_range", "加长枪膛", "仅霰弹枪：飞行距离增加，扩散略微收束"),
     Upgrade("magnet", "废料磁环", "拾取吸附范围 +16"),
     Upgrade("pulse", "电弧反应堆", "脉冲伤害 +8，冷却 -6%"),
     Upgrade("dash", "矢量驱动", "冲刺冷却 -7%，移速 +8"),
     Upgrade("enemy_bullet_slow", "迟滞电场", "敌方子弹速度 -12%"),
     Upgrade("credit_boost", "回收协议", "晶片获取 +25%"),
-    Upgrade("ricochet", "折射弹仓", "攻击获得 1 次反射"),
+    Upgrade("ricochet", "折射弹仓", "攻击获得 1 次反射；激光最多可叠加至 3 次"),
     Upgrade("pulse_radius", "广域脉冲", "脉冲范围 +22"),
 )
 UPGRADE_KEYS = {upgrade.key for upgrade in UPGRADES}
+WEAPON_TAGS = {
+    "rifle": frozenset({"projectile", "ballistic"}),
+    "scatter": frozenset({"projectile", "ballistic", "rapid_fire"}),
+    "shotgun": frozenset({"projectile", "ballistic", "shotgun"}),
+    "rail": frozenset({"projectile", "ballistic", "precision"}),
+    "laser_burst": frozenset({"laser", "beam", "rapid_fire"}),
+    "laser_lance": frozenset({"laser", "beam", "heavy"}),
+}
+WEAPON_EXCLUSIVE_UPGRADES = {
+    "shotgun_range": {"shotgun"},
+}
+UPGRADE_WEAPON_RULES = {
+    "accuracy": UpgradeWeaponRule(required_weapon_tags=frozenset({"projectile"})),
+    "pierce": UpgradeWeaponRule(required_weapon_tags=frozenset({"projectile"})),
+    "multishot": UpgradeWeaponRule(required_weapon_tags=frozenset({"projectile"})),
+    "shotgun_range": UpgradeWeaponRule(required_weapon_tags=frozenset({"shotgun"})),
+}
 
 STAGES = (
     StageOption("stage_1", "第一关", "标准开局，适合熟悉玩法", 1),
@@ -78,9 +102,10 @@ CHARACTERS = (
 WEAPONS = (
     WeaponOption("rifle", "制式步枪", "折中稳定的标准武器", "中等射速、中等伤害与中等准度"),
     WeaponOption("scatter", "蜂群机枪", "高速压制型武器", "射速极高，但单发伤害和准度更低"),
+    WeaponOption("shotgun", "废土霰弹枪", "近距离爆发型武器", "一次喷出多枚弹丸，独有“距离增加”强化"),
     WeaponOption("rail", "猎隼狙击枪", "高伤高准的远距武器", "射速慢，但单发伤害、准度和暴击都更强"),
-    WeaponOption("laser_burst", "脉冲激光", "低伤高频的贯穿激光", "瞬时命中整条直线，可反射并穿透可破坏障碍"),
-    WeaponOption("laser_lance", "棱镜重激光", "高伤低频的聚焦激光", "单次命中更重，开火时会产生轻微后坐力"),
+    WeaponOption("laser_burst", "脉冲激光", "低伤高频的贯穿激光", "瞬时命中整条直线，反射最多可叠加至 3 次"),
+    WeaponOption("laser_lance", "棱镜重激光", "高伤低频的聚焦激光", "单次命中更重，反射最多可叠加至 3 次并带轻微后坐力"),
 )
 
 SUPPLY_OPTIONS = (

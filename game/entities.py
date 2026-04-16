@@ -11,13 +11,16 @@ class Bullet:
     velocity: pygame.Vector2
     damage: float
     radius: int
+    knockback: float
     ttl: float
+    max_ttl: float = 0.0
     pierce: int = 0
     bounces_left: int = 0
     friendly: bool = True
     color: tuple[int, int, int] = (255, 255, 255)
     crit: bool = False
     hits_all: bool = False
+    decay_visual: bool = False
 
 
 @dataclass
@@ -36,6 +39,10 @@ class Enemy:
     shoot_cooldown: float = 0.0
     shoot_timer: float = 0.0
     aim_direction: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    action_state: str = ""
+    action_timer: float = 0.0
+    special_timer: float = 0.0
+    alt_special_timer: float = 0.0
 
 
 @dataclass

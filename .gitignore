@@ -1,26 +1,9 @@
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
 .venv/
-venv/
-env/
-ENV/
-
-# Build and packaging artifacts
 build/
 dist/
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-
-# PyInstaller
-*.spec.bak
-
-# IDE and OS files
 .idea/
-.vscode/
-Thumbs.db
-.DS_Store
+.pipeline-workspace/
+__pycache__/
+game/__pycache__/
+*.pyc
+highscore.json

@@ -9,7 +9,7 @@ from pathlib import Path
 import pygame
 
 from . import config
-from .balance import SHOP_OFFER_POOL, enemy_credit_drop, enemy_scaling, hazard_profile, obstacle_credit_drop, reward_credit_drop, scale_shop_cost
+from .balance import SHOP_OFFER_POOL, enemy_attack_cooldown, enemy_credit_drop, enemy_scaling, hazard_profile, obstacle_credit_drop, reward_credit_drop, scale_shop_cost
 from .content import (
     CHARACTERS,
     STAGES,
@@ -19,6 +19,9 @@ from .content import (
     UPGRADE_KEYS,
     UPGRADES,
     WEAPONS,
+    WEAPON_EXCLUSIVE_UPGRADES,
+    UPGRADE_WEAPON_RULES,
+    WEAPON_TAGS,
     CharacterOption,
     StageOption,
     SupplyOption,
@@ -27,6 +30,7 @@ from .content import (
 )
 from .entities import Bullet, Enemy, ExplosionWave, FloatingText, GasCloud, LaserTrace, Particle, Pickup
 from .map_system import FloorMap, FloorRoom, OPPOSITE_DIRECTIONS, RoomLayout, RoomObstacle, build_floor_map, build_stitched_layout
+from .navigation import NavigationField
 
 
 @dataclass
@@ -67,6 +71,7 @@ class Game:
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"], 19)
         self.small_font = pygame.font.SysFont(["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"], 15)
+        self.tiny_font = pygame.font.SysFont(["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"], 13)
         self.big_font = pygame.font.SysFont(["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS"], 34, bold=True)
         self.rng = random.Random()
         self.running = True
@@ -97,9 +102,17 @@ class Game:
         self.weapon_mode = "projectile"
         self.player_beam_width = 10
         self.player_beam_color = config.BULLET_COLOR
+        self.player_projectile_speed = float(config.BULLET_SPEED)
+        self.player_projectile_ttl = 1.5
+        self.player_projectile_radius = config.BULLET_RADIUS
+        self.player_projectile_knockback = config.PROJECTILE_BASE_KNOCKBACK
+        self.player_shotgun_pellets = 1
+        self.player_shotgun_spread = 0.0
         self.pickup_radius = 72.0
         self.credit_gain_multiplier = 1.0
         self.enemy_bullet_speed_multiplier = 1.0
+        self.shotgun_range_bonus = 0.0
+        self.shot_serial = 0
         self.dash_distance = float(config.DASH_DISTANCE)
         self.dash_cooldown = float(config.DASH_COOLDOWN)
         self.dash_timer = 0.0
@@ -125,6 +138,7 @@ class Game:
         self.current_room_state: RoomState | None = None
         self.floor_map: FloorMap | None = None
         self.room_states: dict[int, RoomState] = {}
+        self.navigation_fields: dict[int, NavigationField] = {}
 
         self.bullets: list[Bullet] = []
         self.enemies: list[Enemy] = []
@@ -138,11 +152,17 @@ class Game:
         self.room_layout: RoomLayout | None = None
         self.room_clear_delay = 0.0
         self.mode = "title"
+        self.floor_transition_timer = 0.0
+        self.floor_transition_total = 0.0
+        self.floor_transition_target = 0
+        self.floor_transition_switched = False
         self.upgrade_choices: list[Upgrade] = []
         self.reward_choices: list[Upgrade] = []
         self.supply_choices: list[SupplyOption] = list(SUPPLY_OPTIONS)
         self.current_score = 0
         self.message = "选择关卡、机体与武器，准备下潜钢铁蜂巢"
+        self.title_panel_scroll = 0.0
+        self.title_panel_scroll_target = 0.0
 
     def arena_rect(self) -> pygame.Rect:
         return pygame.Rect(
@@ -217,6 +237,9 @@ class Game:
             trimmed[-1] = (trimmed[-1] or "").rstrip() + "..."
             return trimmed
         return lines
+
+    def fit_text_line(self, text: str, font: pygame.font.Font, max_width: int) -> str:
+        return self.wrap_text(text, font, max_width, 1)[0]
 
     def spawn_particles(
         self,
@@ -307,7 +330,7 @@ class Game:
         self.room_index = self.base_progress
         self.rooms_cleared = max(0, self.base_progress - 1)
         self.mode = "playing"
-        self.title_panel = "main"
+        self.open_title_panel("main")
         self.build_floor()
 
     def apply_selected_loadout(self) -> None:
@@ -329,6 +352,12 @@ class Game:
         self.weapon_mode = "projectile"
         self.player_beam_width = 10
         self.player_beam_color = config.BULLET_COLOR
+        self.player_projectile_speed = float(config.BULLET_SPEED)
+        self.player_projectile_ttl = 1.5
+        self.player_projectile_radius = config.BULLET_RADIUS
+        self.player_projectile_knockback = config.PROJECTILE_BASE_KNOCKBACK
+        self.player_shotgun_pellets = 1
+        self.player_shotgun_spread = 0.0
         self.player_spread = 0.018
         self.player_crit_chance = 0.08
         self.player_crit_multiplier = 1.75
@@ -339,16 +368,29 @@ class Game:
             self.player_crit_chance = 0.05
             self.player_crit_multiplier = 1.55
         elif self.selected_weapon.key == "rail":
-            self.player_damage = 36.0
+            self.player_damage = 40.0
             self.fire_cooldown = 0.52
             self.player_spread = 0.006
             self.player_crit_chance = 0.24
             self.player_crit_multiplier = 2.30
             self.bullet_pierce += 1
+            self.player_projectile_speed = config.BULLET_SPEED * config.RAIL_PROJECTILE_SPEED_SCALE
+            self.player_projectile_ttl = 1.8
+        elif self.selected_weapon.key == "shotgun":
+            self.player_damage = 7.0
+            self.fire_cooldown = 0.54
+            self.player_spread = 0.02
+            self.player_crit_chance = 0.04
+            self.player_crit_multiplier = 1.45
+            self.player_projectile_speed = config.BULLET_SPEED * config.SHOTGUN_PELLET_SPEED_SCALE
+            self.player_projectile_ttl = config.SHOTGUN_BASE_TTL
+            self.player_projectile_knockback = config.SHOTGUN_KNOCKBACK
+            self.player_shotgun_pellets = config.SHOTGUN_BASE_PELLETS
+            self.player_shotgun_spread = config.SHOTGUN_BASE_SPREAD
         elif self.selected_weapon.key == "laser_burst":
             self.weapon_mode = "laser"
             self.player_damage = 6.0
-            self.fire_cooldown = 0.11
+            self.fire_cooldown = config.LASER_BURST_FIRE_COOLDOWN
             self.player_beam_width = 12
             self.player_beam_color = config.LASER_LIGHT_COLOR
             self.player_crit_chance = 0.06
@@ -364,6 +406,80 @@ class Game:
         else:
             self.player_damage += 2
 
+    def is_laser_weapon(self) -> bool:
+        return self.weapon_mode == "laser" or "laser" in self.active_weapon_tags()
+
+    def is_shotgun_weapon(self) -> bool:
+        return "shotgun" in self.active_weapon_tags()
+
+    def active_weapon_keys(self) -> tuple[str, ...]:
+        return (self.selected_weapon.key,)
+
+    def active_weapon_tags(self) -> set[str]:
+        tags: set[str] = set()
+        for weapon_key in self.active_weapon_keys():
+            tags.update(WEAPON_TAGS.get(weapon_key, ()))
+        return tags
+
+    def ricochet_cap(self) -> int:
+        return 3 if self.is_laser_weapon() else 1
+
+    def supports_upgrade(self, upgrade_key: str) -> bool:
+        active_keys = set(self.active_weapon_keys())
+        allowed_weapons = WEAPON_EXCLUSIVE_UPGRADES.get(upgrade_key)
+        if allowed_weapons is not None and not active_keys.intersection(allowed_weapons):
+            return False
+
+        rule = UPGRADE_WEAPON_RULES.get(upgrade_key)
+        if rule is None:
+            return True
+
+        active_tags = self.active_weapon_tags()
+        if rule.required_weapon_keys and not active_keys.intersection(rule.required_weapon_keys):
+            return False
+        if rule.required_weapon_tags and not active_tags.intersection(rule.required_weapon_tags):
+            return False
+        return True
+
+    def multishot_cap(self) -> int:
+        return 2
+
+    def shotgun_range_cap_reached(self) -> bool:
+        return self.player_projectile_ttl >= config.SHOTGUN_RANGE_CAP
+
+    def is_upgrade_available(self, upgrade_key: str) -> bool:
+        if not self.supports_upgrade(upgrade_key):
+            return False
+        return not (
+            (upgrade_key == "multishot" and self.multishot >= self.multishot_cap())
+            or (upgrade_key == "ricochet" and self.player_bullet_bounces >= self.ricochet_cap())
+            or (upgrade_key == "accuracy" and self.player_spread <= 0.004)
+            or (upgrade_key == "shotgun_range" and (not self.is_shotgun_weapon() or self.shotgun_range_cap_reached()))
+            or (upgrade_key == "crit_rate" and self.player_crit_chance >= 0.45)
+            or (upgrade_key == "crit_damage" and self.player_crit_multiplier >= 2.85)
+            or (upgrade_key == "enemy_bullet_slow" and self.enemy_bullet_speed_multiplier <= 0.60)
+            or (upgrade_key == "credit_boost" and self.credit_gain_multiplier >= 2.0)
+        )
+
+    def invalidate_navigation_fields(self) -> None:
+        self.navigation_fields.clear()
+
+    def get_navigation_field(self, radius: int) -> NavigationField | None:
+        if self.room_layout is None:
+            return None
+        radius_key = max(config.ENEMY_RADIUS, int(radius))
+        field = self.navigation_fields.get(radius_key)
+        if field is None:
+            field = NavigationField(
+                arena=self.arena_rect(),
+                obstacle_rects=tuple(obstacle.rect.copy() for obstacle in self.obstacles),
+                agent_radius=radius_key,
+                step=config.NAV_GRID_STEP,
+                padding=config.NAV_GRID_PADDING,
+            )
+            self.navigation_fields[radius_key] = field
+        return field
+
     def build_floor(self) -> None:
         arena = self.arena_rect()
         base_difficulty = self.base_progress + (self.floor_index - 1) * 3
@@ -376,6 +492,7 @@ class Game:
         self.laser_traces.clear()
         self.explosion_waves.clear()
         self.floaters.clear()
+        self.invalidate_navigation_fields()
         self.message = f"进入第 {self.floor_index} 层"
         if self.floor_map is None:
             return
@@ -419,6 +536,7 @@ class Game:
         self.bullets.clear()
         self.laser_traces.clear()
         self.explosion_waves.clear()
+        self.invalidate_navigation_fields()
         self.room_clear_delay = 0.0
         self.room_transition_cooldown = 0.45
         self.room_index = room_state.difficulty
@@ -474,6 +592,7 @@ class Game:
                 enemy = self.make_enemy(arena)
                 shooter_count = self.limit_shooter(enemy, shooter_count, shooter_cap)
                 room_state.enemies.append(enemy)
+            self.inject_theme_enemies(room_state, arena)
             return
 
         if room_state.room_type == "elite":
@@ -486,6 +605,7 @@ class Game:
                     self.promote_elite_enemy(enemy)
                 shooter_count = self.limit_shooter(enemy, shooter_count, max(1, shooter_cap))
                 room_state.enemies.append(enemy)
+            self.inject_theme_enemies(room_state, arena)
             return
 
         if room_state.room_type == "boss":
@@ -499,9 +619,90 @@ class Game:
                     self.promote_elite_enemy(enemy)
                 shooter_count = self.limit_shooter(enemy, shooter_count, max(1, shooter_cap))
                 room_state.enemies.append(enemy)
+            self.inject_theme_enemies(room_state, arena)
+
+    def themed_enemy_kind(self, theme: str) -> str | None:
+        if theme == "废料堆场":
+            return "toxic_bloater"
+        if theme == "反应堆室":
+            return "reactor_bomber"
+        return None
+
+    def themed_enemy_count(self, room_state: RoomState) -> int:
+        if self.themed_enemy_kind(room_state.layout.theme) is None:
+            return 0
+        if room_state.room_type == "elite":
+            return 2
+        if room_state.room_type == "boss":
+            return 1
+        return 1 if room_state.room_type == "combat" else 0
+
+    def make_theme_enemy(self, arena: pygame.Rect, kind: str) -> Enemy:
+        if self.room_layout is not None and self.room_layout.enemy_cells:
+            pos = self.random_free_position(
+                arena,
+                config.ENEMY_RADIUS + 10,
+                allowed_cells=self.room_layout.enemy_cells,
+                min_distance=180,
+            )
+        else:
+            pos = self.random_free_position(arena, config.ENEMY_RADIUS + 10)
+        hp_scale, damage_scale, speed_bonus = enemy_scaling(self.room_index, self.floor_index)
+        base_speed = config.ENEMY_SPEED + speed_bonus
+        damage = config.ENEMY_TOUCH_DAMAGE * damage_scale
+        xp_reward = 10 + self.room_index // 2 + max(0, self.floor_index - 1)
+        if kind == "toxic_bloater":
+            return Enemy(
+                pos=pos,
+                hp=34 * hp_scale,
+                max_hp=34 * hp_scale,
+                speed=base_speed * 0.86,
+                radius=config.ENEMY_RADIUS + 1,
+                damage=damage * 0.92,
+                xp_reward=xp_reward + 4,
+                color=config.TOXIC_ENEMY_COLOR,
+                knockback_resist=0.95,
+                kind=kind,
+            )
+        return Enemy(
+            pos=pos,
+            hp=40 * hp_scale,
+            max_hp=40 * hp_scale,
+            speed=base_speed * 0.82,
+            radius=config.ENEMY_RADIUS + 2,
+            damage=damage * 1.06,
+            xp_reward=xp_reward + 5,
+            color=config.REACTOR_ENEMY_COLOR,
+            knockback_resist=1.08,
+            kind=kind,
+        )
+
+    def inject_theme_enemies(self, room_state: RoomState, arena: pygame.Rect) -> None:
+        special_kind = self.themed_enemy_kind(room_state.layout.theme)
+        special_count = self.themed_enemy_count(room_state)
+        if special_kind is None or special_count <= 0 or not room_state.enemies:
+            return
+        preferred = [
+            idx
+            for idx, enemy in enumerate(room_state.enemies)
+            if not enemy.is_boss and enemy.kind not in {"elite", "toxic_bloater", "reactor_bomber"}
+        ]
+        fallback = [
+            idx
+            for idx, enemy in enumerate(room_state.enemies)
+            if not enemy.is_boss and idx not in preferred
+        ]
+        self.rng.shuffle(preferred)
+        self.rng.shuffle(fallback)
+        candidate_indices = preferred + fallback
+        for idx in candidate_indices[:special_count]:
+            anchor = room_state.enemies[idx].pos.copy()
+            themed_enemy = self.make_theme_enemy(arena, special_kind)
+            themed_enemy.pos = anchor
+            room_state.enemies[idx] = themed_enemy
 
     def limit_shooter(self, enemy: Enemy, shooter_count: int, shooter_cap: int) -> int:
-        if enemy.kind not in {"shooter", "laser"}:
+        if enemy.kind not in {"shooter", "laser", "shotgunner"}:
             return shooter_count
         if shooter_count >= shooter_cap:
             if enemy.kind == "laser":
@@ -511,8 +712,17 @@ class Game:
                 enemy.damage *= 0.82
                 enemy.max_hp *= 0.95
                 enemy.hp = min(enemy.hp, enemy.max_hp)
-                enemy.shoot_cooldown = max(1.0, enemy.shoot_cooldown * 0.78)
+                enemy.shoot_cooldown = enemy_attack_cooldown("shooter", self.room_index, self.floor_index)
                 enemy.shoot_timer = self.rng.random() * enemy.shoot_cooldown
+                enemy.aim_direction = pygame.Vector2()
+                return shooter_count
+            if enemy.kind == "shotgunner":
+                enemy.kind = "charger"
+                enemy.color = (255, 150, 150)
+                enemy.speed *= 1.18
+                enemy.damage *= 1.06
+                enemy.shoot_cooldown = 0.0
+                enemy.shoot_timer = 0.0
                 enemy.aim_direction = pygame.Vector2()
                 return shooter_count
             enemy.kind = "grunt"
@@ -528,16 +738,19 @@ class Game:
     def promote_elite_enemy(self, enemy: Enemy) -> None:
         enemy.kind = "elite"
         enemy.color = config.ELITE_COLOR
-        enemy.speed *= 1.06
-        enemy.damage *= 1.18
-        enemy.radius = max(enemy.radius, config.ENEMY_RADIUS + 4)
-        enemy.knockback_resist = max(enemy.knockback_resist, 1.8)
-        enemy.max_hp *= 1.6
+        enemy.speed *= 1.14
+        enemy.damage *= 1.12
+        enemy.radius = max(enemy.radius, config.ENEMY_RADIUS + 2)
+        enemy.knockback_resist = 1.0
+        enemy.max_hp *= 0.96
         enemy.hp = enemy.max_hp
         enemy.xp_reward += 10
-        if enemy.shoot_cooldown <= 0:
-            enemy.shoot_cooldown = max(0.95, 1.48 - self.room_index * 0.02 - max(0, self.floor_index - 1) * 0.04)
-            enemy.shoot_timer = self.rng.random() * enemy.shoot_cooldown
+        enemy.shoot_cooldown = enemy_attack_cooldown("elite", self.room_index, self.floor_index)
+        enemy.shoot_timer = self.rng.random() * enemy.shoot_cooldown
+        enemy.action_state = ""
+        enemy.action_timer = 0.0
+        enemy.special_timer = 0.0
+        enemy.alt_special_timer = 0.0
 
     def build_room_layout(self, arena: pygame.Rect) -> RoomLayout:
         return build_stitched_layout(arena, self.room_index, self.rng)
@@ -687,7 +900,12 @@ class Game:
         return points[:count]
 
     def build_shop_offers(self, layout: RoomLayout, difficulty: int) -> list[ShopOffer]:
-        picks = self.rng.sample(list(SHOP_OFFER_POOL), 3)
+        pool = [
+            offer
+            for offer in SHOP_OFFER_POOL
+            if offer.key not in UPGRADE_KEYS or self.is_upgrade_available(offer.key)
+        ]
+        picks = self.rng.sample(pool if len(pool) >= 3 else list(SHOP_OFFER_POOL), 3)
         positions = self.get_room_feature_points(layout, 3)
         return [
             ShopOffer(
@@ -701,23 +919,8 @@ class Game:
         ]
 
     def roll_upgrade_choices(self, count: int = 3) -> list[Upgrade]:
-        laser_weapon = self.weapon_mode == "laser" or self.selected_weapon.key in {"laser_burst", "laser_lance"}
-        filtered = [
-            upgrade
-            for upgrade in UPGRADES
-            if not (
-                (upgrade.key == "multishot" and self.multishot >= 2)
-                or (laser_weapon and upgrade.key in {"multishot", "pierce"})
-                or (upgrade.key == "ricochet" and self.player_bullet_bounces >= 1)
-                or (not laser_weapon and upgrade.key == "accuracy" and self.player_spread <= 0.004)
-                or (laser_weapon and upgrade.key == "accuracy" and self.player_beam_width <= 10)
-                or (upgrade.key == "crit_rate" and self.player_crit_chance >= 0.45)
-                or (upgrade.key == "crit_damage" and self.player_crit_multiplier >= 2.85)
-                or (upgrade.key == "enemy_bullet_slow" and self.enemy_bullet_speed_multiplier <= 0.60)
-                or (upgrade.key == "credit_boost" and self.credit_gain_multiplier >= 2.0)
-            )
-        ]
-        pool = filtered if len(filtered) >= count else list(UPGRADES)
+        filtered = [upgrade for upgrade in UPGRADES if self.is_upgrade_available(upgrade.key)]
+        pool = filtered if len(filtered) >= count else filtered
         return self.rng.sample(pool, count)
 
     def make_enemy(self, arena: pygame.Rect) -> Enemy:
@@ -743,12 +946,13 @@ class Game:
         max_hp = 33 * hp_scale
         laser_roll = 0.0 if self.room_index < 5 else (0.07 if self.room_index <= 7 else 0.10)
         shooter_roll = 0.14 if self.room_index <= 5 else 0.20
+        shotgunner_roll = 0.0 if self.room_index < 3 else (0.08 if self.room_index <= 5 else 0.12)
         if laser_roll > 0 and roll < laser_roll:
             kind = "laser"
             color = config.ENEMY_LASER_COLOR
             speed *= 0.76
             damage *= 0.95
-            shoot_cooldown = max(1.5, 2.28 - self.room_index * 0.03 - max(0, self.floor_index - 1) * 0.05)
+            shoot_cooldown = enemy_attack_cooldown("laser", self.room_index, self.floor_index)
             xp_reward += 7
             max_hp *= 1.28
         elif self.room_index >= 2 and roll < laser_roll + shooter_roll:
@@ -756,9 +960,17 @@ class Game:
             color = config.SHOOTER_COLOR
             speed *= 0.78 if self.room_index <= 5 else 0.84
             damage *= 0.62 if self.room_index <= 5 else 0.80
-            shoot_cooldown = max(1.0, 1.92 - self.room_index * 0.03 - max(0, self.floor_index - 1) * 0.05)
+            shoot_cooldown = enemy_attack_cooldown("shooter", self.room_index, self.floor_index)
             xp_reward += 4
             max_hp *= 1.10 if self.room_index <= 5 else 1.18
+        elif shotgunner_roll > 0 and roll < laser_roll + shooter_roll + shotgunner_roll:
+            kind = "shotgunner"
+            color = config.SHOTGUN_ENEMY_COLOR
+            speed *= 0.92
+            damage *= 0.94
+            shoot_cooldown = enemy_attack_cooldown("shotgunner", self.room_index, self.floor_index)
+            xp_reward += 5
+            max_hp *= 1.08
         elif self.room_index >= 3 and roll < 0.38:
             kind = "charger"
             speed *= 1.35
@@ -769,12 +981,13 @@ class Game:
         elif self.room_index >= 4 and roll < 0.48:
             kind = "elite"
             color = config.ELITE_COLOR
-            speed *= 1.10
-            damage *= 1.20
-            radius += 4
+            speed *= 1.18
+            damage *= 1.12
+            radius += 2
+            shoot_cooldown = enemy_attack_cooldown("elite", self.room_index, self.floor_index)
             xp_reward += 10
-            knockback_resist = 1.8
-            max_hp *= 1.72
+            knockback_resist = 1.0
+            max_hp *= 0.92
         return Enemy(
             pos=pos,
             hp=max_hp,
@@ -814,8 +1027,10 @@ class Game:
             knockback_resist=2.8,
             is_boss=True,
             kind="boss",
-            shoot_cooldown=max(0.82, 1.42 - self.room_index * 0.02 - max(0, self.floor_index - 1) * 0.04),
+            shoot_cooldown=enemy_attack_cooldown("boss", self.room_index, self.floor_index),
             shoot_timer=0.7,
+            special_timer=1.5,
+            alt_special_timer=3.4,
         )
 
     def give_xp(self, amount: int) -> None:
@@ -864,11 +1079,18 @@ class Game:
             if self.weapon_mode == "laser":
                 self.player_beam_width += 3
                 applied_name = f"{upgrade.name}（转化为激光宽度 +3）"
-            elif self.multishot < 2:
+            elif self.multishot < self.multishot_cap():
                 self.multishot += 1
             else:
                 self.player_damage += 2
                 applied_name = f"{upgrade.name}（转化为火力 +2）"
+        elif upgrade.key == "shotgun_range":
+            if self.is_shotgun_weapon() and not self.shotgun_range_cap_reached():
+                self.shotgun_range_bonus += config.SHOTGUN_RANGE_STEP
+                self.player_projectile_ttl = min(config.SHOTGUN_RANGE_CAP, self.player_projectile_ttl + config.SHOTGUN_RANGE_STEP)
+                self.player_shotgun_spread = max(0.08, self.player_shotgun_spread - 0.02)
+            else:
+                applied_name = f"{upgrade.name}（当前武器不可用）"
         elif upgrade.key == "magnet":
             self.pickup_radius += 16
         elif upgrade.key == "pulse":
@@ -882,14 +1104,10 @@ class Game:
         elif upgrade.key == "credit_boost":
             self.credit_gain_multiplier = min(2.0, self.credit_gain_multiplier + 0.25)
         elif upgrade.key == "ricochet":
-            if self.player_bullet_bounces < 1:
-                self.player_bullet_bounces = 1
-            elif self.weapon_mode == "laser":
-                self.player_beam_width += 2
-                applied_name = f"{upgrade.name}（转化为激光宽度 +2）"
+            if self.player_bullet_bounces < self.ricochet_cap():
+                self.player_bullet_bounces += 1
             else:
-                self.bullet_pierce += 1
-                applied_name = f"{upgrade.name}（转化为穿透 +1）"
+                applied_name = f"{upgrade.name}（已达上限）"
         elif upgrade.key == "pulse_radius":
             self.pulse_radius += 22
         self.mode = "playing"
@@ -976,6 +1194,7 @@ class Game:
         self.handle_destroyed_obstacle(obstacle, impact_pos)
         if self.current_room_state is not None:
             self.current_room_state.layout.obstacles = self.obstacles
+        self.invalidate_navigation_fields()
         return True
 
     def spawn_explosion_wave(self, pos: pygame.Vector2, radius: float, color: tuple[int, int, int], ttl: float = 0.42) -> None:
@@ -1089,20 +1308,78 @@ class Game:
         }
 
     def get_title_panel_back_button(self) -> pygame.Rect:
-        return pygame.Rect(42, 632, 110, 34)
+        return pygame.Rect(922, 626, 120, 40)
 
     def get_title_panel_start_button(self) -> pygame.Rect:
-        return pygame.Rect(260, 632, 122, 34)
+        return pygame.Rect(1056, 626, 150, 40)
+
+    def get_title_panel_viewport_rect(self) -> pygame.Rect:
+        return pygame.Rect(54, 188, 1152, 392)
+
+    def title_panel_uses_scroll(self, panel: str | None = None) -> bool:
+        panel_key = self.title_panel if panel is None else panel
+        return panel_key == "weapon"
+
+    def title_panel_card_height(self, panel: str | None = None) -> int:
+        panel_key = self.title_panel if panel is None else panel
+        if panel_key == "weapon":
+            return 104
+        if panel_key == "character":
+            return 86
+        return 82
+
+    def title_panel_gap(self, panel: str | None = None) -> int:
+        return 12 if self.title_panel_uses_scroll(panel) else 10
+
+    def title_panel_content_height(self, count: int, panel: str | None = None) -> int:
+        if count <= 0:
+            return 0
+        return count * self.title_panel_card_height(panel) + (count - 1) * self.title_panel_gap(panel)
+
+    def max_title_panel_scroll(self, panel: str | None = None, count: int | None = None) -> float:
+        panel_key = self.title_panel if panel is None else panel
+        if count is None:
+            count = len(self.current_title_options()) if panel_key == self.title_panel else 0
+        viewport = self.get_title_panel_viewport_rect()
+        return max(0.0, float(self.title_panel_content_height(count, panel_key) - viewport.height))
+
+    def clamp_title_panel_scroll(self, value: float, panel: str | None = None, count: int | None = None) -> float:
+        return max(0.0, min(self.max_title_panel_scroll(panel, count), float(value)))
+
+    def reset_title_panel_scroll(self) -> None:
+        self.title_panel_scroll = 0.0
+        self.title_panel_scroll_target = 0.0
+
+    def update_title_panel_scroll(self, dt: float) -> None:
+        if not self.title_panel_uses_scroll():
+            self.title_panel_scroll = self.clamp_title_panel_scroll(self.title_panel_scroll, self.title_panel)
+            self.title_panel_scroll_target = self.title_panel_scroll
+            return
+        blend = min(1.0, dt * config.TITLE_PANEL_SCROLL_LERP)
+        self.title_panel_scroll += (self.title_panel_scroll_target - self.title_panel_scroll) * blend
+        if abs(self.title_panel_scroll_target - self.title_panel_scroll) <= 0.5:
+            self.title_panel_scroll = self.title_panel_scroll_target
+
+    def scroll_title_panel(self, delta: float) -> None:
+        if self.title_panel == "main":
+            return
+        count = len(self.current_title_options())
+        panel = self.title_panel
+        next_value = self.clamp_title_panel_scroll(self.title_panel_scroll_target + delta, panel, count)
+        self.title_panel_scroll_target = next_value
+        if not self.title_panel_uses_scroll(panel):
+            self.title_panel_scroll = next_value
 
     def get_title_panel_option_rects(self, count: int) -> list[pygame.Rect]:
         if count <= 0:
             return []
-        top = 176
-        gap = 10
-        bottom = self.get_title_panel_back_button().top - 18
-        available = bottom - top - gap * (count - 1)
-        height = max(72, min(86, available // count))
-        return [pygame.Rect(88, top + idx * (height + gap), 1104, height) for idx in range(count)]
+        viewport = self.get_title_panel_viewport_rect()
+        inner_left = viewport.left + 8
+        inner_width = viewport.width - 28
+        top = viewport.top - int(round(self.title_panel_scroll))
+        height = self.title_panel_card_height()
+        gap = self.title_panel_gap()
+        return [pygame.Rect(inner_left, top + idx * (height + gap), inner_width, height) for idx in range(count)]
 
     def current_title_options(self) -> list[StageOption | CharacterOption | WeaponOption]:
         if self.title_panel == "stage":
@@ -1133,13 +1410,25 @@ class Game:
             pygame.K_KP4: 3,
             pygame.K_5: 4,
             pygame.K_KP5: 4,
+            pygame.K_6: 5,
+            pygame.K_KP6: 5,
         }
         return mapping.get(key)
 
     def open_title_panel(self, panel: str) -> None:
         self.title_panel = panel
+        self.reset_title_panel_scroll()
         title, _ = TITLE_PANEL_INFO.get(panel, TITLE_PANEL_INFO["main"])
         self.message = title
+
+    def title_panel_option_index_at(self, mouse_pos: tuple[int, int]) -> int | None:
+        viewport = self.get_title_panel_viewport_rect()
+        if not viewport.collidepoint(mouse_pos):
+            return None
+        for idx, rect in enumerate(self.get_title_panel_option_rects(len(self.current_title_options()))):
+            if rect.collidepoint(mouse_pos):
+                return idx
+        return None
 
     def handle_title_click(self, mouse_pos: tuple[int, int]) -> bool:
         if self.title_panel == "main":
@@ -1152,17 +1441,16 @@ class Game:
                 return True
         else:
             if self.get_title_panel_back_button().collidepoint(mouse_pos):
-                self.title_panel = "main"
+                self.open_title_panel("main")
                 return True
             if self.get_title_panel_start_button().collidepoint(mouse_pos):
                 self.start_run(self.selected_stage.start_room)
                 return True
-            options = self.current_title_options()
-            for idx, rect in enumerate(self.get_title_panel_option_rects(len(options))):
-                if rect.collidepoint(mouse_pos):
-                    self.select_title_option(idx)
-                    self.title_panel = "main"
-                    return True
+            idx = self.title_panel_option_index_at(mouse_pos)
+            if idx is not None:
+                self.select_title_option(idx)
+                self.open_title_panel("main")
+                return True
         return False
 
     def handle_pause_click(self, mouse_pos: tuple[int, int]) -> bool:
@@ -1174,6 +1462,7 @@ class Game:
             self.start_run(self.selected_stage.start_room)
             return True
         if buttons[2].collidepoint(mouse_pos):
+            self.open_title_panel("main")
             self.mode = "title"
             return True
         return False
@@ -1184,6 +1473,7 @@ class Game:
             self.start_run(self.selected_stage.start_room)
             return True
         if buttons[1].collidepoint(mouse_pos):
+            self.open_title_panel("main")
             self.mode = "title"
             return True
         return False
@@ -1192,6 +1482,9 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and self.mode == "title" and event.button in (4, 5):
+                direction = -1 if event.button == 4 else 1
+                self.scroll_title_panel(direction * config.TITLE_PANEL_SCROLL_STEP)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self.mode == "level_up":
                     self.handle_choice_click(event.pos, self.upgrade_choices, self.apply_upgrade)
@@ -1205,10 +1498,21 @@ class Game:
                     self.handle_pause_click(event.pos)
                 elif self.mode == "dead":
                     self.handle_dead_click(event.pos)
+            elif event.type == pygame.MOUSEWHEEL and self.mode == "title":
+                self.scroll_title_panel(-event.y * config.TITLE_PANEL_SCROLL_STEP)
             elif event.type == pygame.KEYDOWN:
+                if self.mode == "floor_confirm":
+                    if event.key == pygame.K_ESCAPE:
+                        self.mode = "playing"
+                        self.message = "已取消前往下一层"
+                    elif event.key in (pygame.K_e, pygame.K_RETURN, pygame.K_SPACE):
+                        self.advance_floor()
+                    continue
+                if self.mode == "floor_transition":
+                    continue
                 if event.key == pygame.K_ESCAPE:
                     if self.mode == "title" and self.title_panel != "main":
-                        self.title_panel = "main"
+                        self.open_title_panel("main")
                     elif self.mode == "playing":
                         self.mode = "paused"
                     elif self.mode == "paused":
@@ -1221,18 +1525,28 @@ class Game:
                     self.open_title_panel("character")
                 elif self.mode == "title" and self.title_panel == "main" and event.key in (pygame.K_3, pygame.K_KP3):
                     self.open_title_panel("weapon")
+                elif self.mode == "title" and self.title_panel != "main" and event.key in (pygame.K_UP, pygame.K_w):
+                    self.scroll_title_panel(-config.TITLE_PANEL_SCROLL_STEP)
+                elif self.mode == "title" and self.title_panel != "main" and event.key in (pygame.K_DOWN, pygame.K_s):
+                    self.scroll_title_panel(config.TITLE_PANEL_SCROLL_STEP)
+                elif self.mode == "title" and self.title_panel != "main" and event.key == pygame.K_PAGEUP:
+                    self.scroll_title_panel(-config.TITLE_PANEL_SCROLL_STEP * 2)
+                elif self.mode == "title" and self.title_panel != "main" and event.key == pygame.K_PAGEDOWN:
+                    self.scroll_title_panel(config.TITLE_PANEL_SCROLL_STEP * 2)
                 elif self.mode == "title" and self.title_panel != "main":
                     idx = self.hotkey_to_index(event.key)
                     if idx is not None and idx < len(self.current_title_options()):
                         self.select_title_option(idx)
-                        self.title_panel = "main"
+                        self.open_title_panel("main")
                 elif self.mode == "dead" and event.key == pygame.K_r:
                     self.start_run(self.selected_stage.start_room)
                 elif self.mode == "dead" and event.key == pygame.K_m:
+                    self.open_title_panel("main")
                     self.mode = "title"
                 elif self.mode == "paused" and event.key == pygame.K_r:
                     self.start_run(self.selected_stage.start_room)
                 elif self.mode == "paused" and event.key == pygame.K_m:
+                    self.open_title_panel("main")
                     self.mode = "title"
                 elif self.mode == "playing" and event.key == pygame.K_SPACE:
                     self.try_dash()
@@ -1273,6 +1587,9 @@ class Game:
             if offer.sold:
                 self.message = f"{offer.name} 已售出"
                 return
+            if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(offer.key):
+                self.message = f"{offer.name} 当前已达上限"
+                return
             if self.credits < offer.cost:
                 self.message = f"晶片不足：{offer.cost}"
                 return
@@ -1290,7 +1607,8 @@ class Game:
         if room.room_type == "boss" and room.exit_active:
             portal_pos = self.get_room_feature_anchor(room)
             if self.player_pos.distance_to(portal_pos) <= 76:
-                self.advance_floor()
+                self.mode = "floor_confirm"
+                self.message = f"确认前往第 {self.floor_index + 1} 层"
 
     def get_nearby_shop_offer(self) -> ShopOffer | None:
         room = self.current_room_state
@@ -1303,6 +1621,10 @@ class Game:
 
     def apply_shop_offer(self, offer: ShopOffer) -> None:
         if offer.key in UPGRADE_KEYS:
+            if not self.is_upgrade_available(offer.key):
+                self.message = f"{offer.name} 当前已达上限"
+                offer.sold = False
+                return
             applied_name = self.apply_upgrade(Upgrade(offer.key, offer.name, offer.description))
             self.message = f"已购买 {applied_name}"
             return
@@ -1361,13 +1683,15 @@ class Game:
             if offer is not None:
                 if offer.sold:
                     return f"{offer.name}（已售出）"
+                if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(offer.key):
+                    return f"{offer.name}（已达上限）"
                 return f"E 购买 {offer.name} - {offer.cost} 晶片"
         elif room.room_type == "treasure" and not room.chest_opened:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 70:
                 return "E 打开宝箱"
         elif room.room_type == "boss" and room.exit_active:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 76:
-                return "E 前往下一层"
+                return "E 启动下层传送"
         return ""
 
     def check_door_transition(self) -> None:
@@ -1384,12 +1708,40 @@ class Game:
             return
 
     def advance_floor(self) -> None:
-        self.floor_index += 1
+        self.mode = "floor_transition"
+        self.floor_transition_target = self.floor_index + 1
+        self.floor_transition_total = config.FLOOR_TRANSITION_DURATION
+        self.floor_transition_timer = config.FLOOR_TRANSITION_DURATION
+        self.floor_transition_switched = False
         self.bullets.clear()
+        self.laser_traces.clear()
+        self.explosion_waves.clear()
+        self.floaters.clear()
+        self.message = f"正在下潜至第 {self.floor_transition_target} 层"
+
+    def finish_floor_advance(self) -> None:
+        self.floor_index = self.floor_transition_target
         self.message = f"进入第 {self.floor_index} 层"
         self.build_floor()
 
+    def update_floor_transition(self, dt: float) -> None:
+        if self.floor_transition_timer <= 0:
+            self.mode = "playing"
+            return
+        self.floor_transition_timer = max(0.0, self.floor_transition_timer - dt)
+        if not self.floor_transition_switched and self.floor_transition_timer <= self.floor_transition_total * 0.5:
+            self.floor_transition_switched = True
+            self.finish_floor_advance()
+        if self.floor_transition_timer <= 0:
+            self.mode = "playing"
+
     def update(self, dt: float) -> None:
+        if self.mode == "floor_transition":
+            self.update_floor_transition(dt)
+            return
+        if self.mode == "title":
+            self.update_title_panel_scroll(dt)
+            return
         if self.mode != "playing":
             return
         self.iframes = max(0.0, self.iframes - dt)
@@ -1682,26 +2034,84 @@ class Game:
             adjusted = adjusted.rotate_rad(self.rng.uniform(-spread, spread))
         return adjusted.normalize() if adjusted.length_squared() > 0 else pygame.Vector2(1, 0)
 
+    def spawn_projectile(
+        self,
+        origin: pygame.Vector2,
+        direction: pygame.Vector2,
+        damage: float,
+        *,
+        speed: float,
+        ttl: float,
+        radius: int,
+        friendly: bool,
+        color: tuple[int, int, int],
+        pierce: int = 0,
+        bounces_left: int = 0,
+        crit: bool = False,
+        hits_all: bool = False,
+        decay_visual: bool = False,
+        knockback: float = config.PROJECTILE_BASE_KNOCKBACK,
+    ) -> None:
+        if direction.length_squared() <= 0:
+            return
+        self.bullets.append(
+            Bullet(
+                pos=origin.copy(),
+                velocity=direction.normalize() * speed,
+                damage=damage,
+                radius=radius,
+                knockback=knockback,
+                ttl=ttl,
+                max_ttl=ttl,
+                pierce=pierce,
+                bounces_left=bounces_left,
+                friendly=friendly,
+                color=color,
+                crit=crit,
+                hits_all=hits_all,
+                decay_visual=decay_visual,
+            )
+        )
+
+    def extra_multishot_angles(self) -> list[float]:
+        angles: list[float] = []
+        for idx in range(self.multishot):
+            lane = idx // 2
+            base = 0.22 + lane * 0.06
+            side = 1 if (self.shot_serial + idx) % 2 == 0 else -1
+            angles.append(side * base)
+        return angles
+
+    def player_projectile_angles(self) -> list[float]:
+        if not self.is_shotgun_weapon():
+            return [0.0, *self.extra_multishot_angles()]
+        pellets = self.player_shotgun_pellets
+        if pellets <= 1:
+            base_angles = [0.0]
+        else:
+            step = (self.player_shotgun_spread * 2) / max(1, pellets - 1)
+            base_angles = [-self.player_shotgun_spread + step * idx for idx in range(pellets)]
+        return [*base_angles, *self.extra_multishot_angles()]
+
     def spawn_bullet_barrel_burst(self, origin: pygame.Vector2, rect: pygame.Rect) -> None:
         size = max(rect.width, rect.height)
         bullet_count = 8 if size <= 24 else 12 if size <= 34 else 16
-        bullet_damage = 8.0 + size * 0.18 + self.floor_index * 0.55
+        bullet_damage = (8.0 + size * 0.18 + self.floor_index * 0.55) * config.BULLET_BARREL_DAMAGE_MULTIPLIER
         bullet_speed = config.BULLET_SPEED * (0.58 + min(0.22, size / 180))
         bullet_ttl = 1.2 + min(0.55, size / 110)
         for idx in range(bullet_count):
             angle = (math.tau / bullet_count) * idx + self.rng.uniform(-0.06, 0.06)
             direction = pygame.Vector2(math.cos(angle), math.sin(angle))
-            self.bullets.append(
-                Bullet(
-                    pos=origin.copy(),
-                    velocity=direction * bullet_speed,
-                    damage=bullet_damage,
-                    radius=config.BULLET_RADIUS + 1,
-                    ttl=bullet_ttl,
-                    friendly=False,
-                    color=config.BULLET_BARREL_COLOR,
-                    hits_all=True,
-                )
+            self.spawn_projectile(
+                origin,
+                direction,
+                bullet_damage,
+                speed=bullet_speed,
+                ttl=bullet_ttl,
+                radius=config.BULLET_RADIUS + 1,
+                friendly=False,
+                color=config.BULLET_BARREL_COLOR,
+                hits_all=True,
             )
         self.spawn_particles(origin.copy(), config.BULLET_BARREL_COLOR, 18, 1.25, (1.5, 4.2), (0.14, 0.34))
         self.floaters.append(FloatingText(origin.copy(), f"弹幕炸裂 x{bullet_count}", config.BULLET_BARREL_COLOR, 0.55))
@@ -1790,34 +2200,32 @@ class Game:
                 self.move_circle_with_collisions(self.player_pos, config.PLAYER_RADIUS, recoil)
                 self.spawn_particles(self.player_pos.copy(), self.player_beam_color, 5, 0.74, (1.5, 3.2), (0.08, 0.18))
             return
-        spreads = [0.0]
-        for i in range(self.multishot):
-            angle = 0.24 + i * 0.06
-            spreads.extend((angle, -angle))
-        for angle in spreads:
+        projectile_color = config.SHOTGUN_PELLET_COLOR if self.is_shotgun_weapon() else config.BULLET_COLOR
+        for angle in self.player_projectile_angles():
             fired = self.apply_projectile_offset(direction.rotate_rad(angle))
             lateral = pygame.Vector2(-fired.y, fired.x)
             spawn_offset = lateral * self.rng.uniform(-self.player_spread * 180, self.player_spread * 180)
             damage, crit = self.roll_player_hit(self.player_damage)
-            self.bullets.append(
-                Bullet(
-                    pos=self.player_pos.copy() + spawn_offset,
-                    velocity=fired * config.BULLET_SPEED,
-                    damage=damage,
-                    radius=config.BULLET_RADIUS,
-                    ttl=1.5,
-                    pierce=self.bullet_pierce,
-                    bounces_left=self.player_bullet_bounces,
-                    friendly=True,
-                    color=config.BULLET_COLOR,
-                    crit=crit,
-                )
+            self.spawn_projectile(
+                self.player_pos.copy() + spawn_offset,
+                fired,
+                damage,
+                speed=self.player_projectile_speed,
+                ttl=self.player_projectile_ttl,
+                radius=self.player_projectile_radius,
+                pierce=self.bullet_pierce,
+                bounces_left=self.player_bullet_bounces,
+                friendly=True,
+                color=projectile_color,
+                crit=crit,
+                knockback=self.player_projectile_knockback,
             )
+        self.shot_serial += 1
 
     def register_bullet_bounce(self, bullet: Bullet) -> None:
         bullet.bounces_left -= 1
         bullet.damage *= 0.92
-        self.spawn_particles(bullet.pos.copy(), config.BULLET_COLOR, 4, 0.55, (1.2, 2.2), (0.08, 0.16))
+        self.spawn_particles(bullet.pos.copy(), bullet.color, 4, 0.55, (1.2, 2.2), (0.08, 0.16))
 
     def try_bounce_from_arena(self, bullet: Bullet, arena: pygame.Rect) -> bool:
         if not bullet.friendly or bullet.bounces_left <= 0:
@@ -1862,6 +2270,14 @@ class Game:
         self.register_bullet_bounce(bullet)
         return True
 
+    def projectile_hits_obstacle(self, bullet: Bullet, obstacle: RoomObstacle, previous_pos: pygame.Vector2) -> bool:
+        return self.circle_intersects_rect(bullet.pos, bullet.radius, obstacle.rect) or self.segment_hits_rect(
+            previous_pos,
+            bullet.pos,
+            obstacle.rect,
+            bullet.radius,
+        )
+
     def update_bullets(self, dt: float) -> None:
         arena = self.arena_rect()
         remaining: list[Bullet] = []
@@ -1877,7 +2293,7 @@ class Game:
                 continue
             hit = False
             for obstacle in self.obstacles[:]:
-                if not self.circle_intersects_rect(bullet.pos, bullet.radius, obstacle.rect):
+                if not self.projectile_hits_obstacle(bullet, obstacle, previous_pos):
                     continue
                 hit = True
                 if (bullet.friendly or bullet.hits_all) and obstacle.destructible:
@@ -1887,6 +2303,8 @@ class Game:
                         hit = False
                     elif not destroyed and self.try_bounce_from_obstacle(bullet, obstacle, previous_pos):
                         hit = False
+                elif self.try_bounce_from_obstacle(bullet, obstacle, previous_pos):
+                    hit = False
                 break
             if hit:
                 continue
@@ -1894,8 +2312,9 @@ class Game:
                 for enemy in self.enemies[:]:
                     if bullet.pos.distance_to(enemy.pos) <= bullet.radius + enemy.radius:
                         enemy.hp -= bullet.damage
-                        push = bullet.velocity.normalize() * 20 / enemy.knockback_resist
-                        self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+                        if bullet.velocity.length_squared() > 0 and bullet.knockback > 0:
+                            push = bullet.velocity.normalize() * bullet.knockback / enemy.knockback_resist
+                            self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
                         color = config.CRIT_COLOR if bullet.crit else (255, 220, 180)
                         text = f"暴击 {int(bullet.damage)}" if bullet.crit else str(int(bullet.damage))
                         self.floaters.append(FloatingText(enemy.pos.copy(), text, color, 0.45))
@@ -1914,9 +2333,37 @@ class Game:
                 remaining.append(bullet)
         self.bullets = remaining
 
+    def enemy_hazard_rect(self, enemy: Enemy) -> pygame.Rect:
+        size = max(34, enemy.radius * 3)
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (round(enemy.pos.x), round(enemy.pos.y))
+        return rect
+
+    def handle_special_enemy_death(self, enemy: Enemy) -> None:
+        if enemy.kind == "toxic_bloater":
+            profile = hazard_profile("toxic", self.enemy_hazard_rect(enemy))
+            self.gas_clouds.append(
+                GasCloud(
+                    pos=enemy.pos.copy(),
+                    radius=profile.radius,
+                    ttl=profile.ttl,
+                    damage=profile.damage,
+                )
+            )
+            self.spawn_particles(enemy.pos.copy(), config.TOXIC_ENEMY_COLOR, int(12 + profile.radius / 22), 0.92, (2.4, 5.0), (0.35, 0.8))
+            self.floaters.append(FloatingText(enemy.pos.copy(), "毒雾扩散", config.TOXIC_ENEMY_COLOR, 0.65))
+        elif enemy.kind == "reactor_bomber":
+            profile = hazard_profile("reactor", self.enemy_hazard_rect(enemy))
+            blast_radius = profile.radius * 0.78
+            blast_damage = profile.damage * 0.92
+            self.spawn_particles(enemy.pos.copy(), config.REACTOR_ENEMY_COLOR, int(16 + blast_radius / 20), 1.2, (2.4, 5.8), (0.16, 0.42))
+            self.floaters.append(FloatingText(enemy.pos.copy(), "反应爆破", config.REACTOR_ENEMY_COLOR, 0.65))
+            self.apply_explosion_damage(enemy.pos.copy(), blast_radius, blast_damage, config.REACTOR_ENEMY_COLOR)
+
     def kill_enemy(self, enemy: Enemy) -> None:
         if enemy in self.enemies:
             self.enemies.remove(enemy)
+        self.handle_special_enemy_death(enemy)
         self.pickups.append(Pickup(enemy.pos.copy(), enemy.xp_reward, config.XP_PICKUP_RADIUS, "xp", config.XP_COLOR, "经验"))
         credit_amount = enemy_credit_drop(self.room_index, self.floor_index, enemy.kind)
         self.pickups.append(Pickup(enemy.pos.copy() + pygame.Vector2(0, 12), credit_amount, config.ITEM_PICKUP_RADIUS, "credit", config.CREDIT_COLOR, "晶片"))
@@ -1937,6 +2384,10 @@ class Game:
     def get_enemy_projectile_damage(self, enemy: Enemy) -> float:
         if enemy.kind == "shooter":
             return max(7.0, enemy.damage * 0.72)
+        if enemy.kind == "shotgunner":
+            return max(5.0, enemy.damage * 0.48)
+        if enemy.kind == "elite":
+            return max(13.0, enemy.damage * 1.10)
         if enemy.kind == "boss":
             return max(14.0, enemy.damage * 1.02)
         return max(10.0, enemy.damage * 0.86)
@@ -1954,14 +2405,93 @@ class Game:
     def get_enemy_laser_width(self, enemy: Enemy) -> int:
         return 16 if enemy.is_boss else 12
 
+    def start_enemy_action(self, enemy: Enemy, action_state: str, duration: float) -> None:
+        enemy.action_state = action_state
+        enemy.action_timer = duration
+        delta = self.player_pos - enemy.pos
+        if delta.length_squared() > 0:
+            enemy.aim_direction = delta.normalize()
+
+    def update_boss_action(self, enemy: Enemy, dt: float) -> bool:
+        if enemy.kind != "boss" or not enemy.action_state:
+            return False
+        enemy.action_timer = max(0.0, enemy.action_timer - dt)
+        if enemy.action_timer > 0:
+            return True
+        if enemy.action_state == "stomp":
+            self.execute_boss_stomp(enemy)
+        elif enemy.action_state == "nova":
+            self.execute_boss_nova(enemy)
+        enemy.action_state = ""
+        enemy.action_timer = 0.0
+        enemy.aim_direction = pygame.Vector2()
+        return True
+
+    def execute_boss_stomp(self, enemy: Enemy) -> None:
+        radius = config.BOSS_STOMP_RADIUS
+        damage = max(22.0, enemy.damage * config.BOSS_STOMP_DAMAGE_MULTIPLIER)
+        self.spawn_explosion_wave(enemy.pos, radius, config.BULLET_SHOCK_COLOR, ttl=0.52)
+        self.spawn_particles(enemy.pos.copy(), config.BULLET_SHOCK_COLOR, 24, 1.8, (2.4, 6.4), (0.18, 0.42))
+        self.floaters.append(FloatingText(enemy.pos.copy() + pygame.Vector2(0, -38), "撼地", config.BULLET_SHOCK_COLOR, 0.7))
+        if self.player_pos.distance_to(enemy.pos) <= radius + config.PLAYER_RADIUS and self.iframes <= 0:
+            self.damage_player(damage, config.BULLET_SHOCK_COLOR, 0.48)
+            knock = self.player_pos - enemy.pos
+            if knock.length_squared() > 0:
+                self.move_circle_with_collisions(
+                    self.player_pos,
+                    config.PLAYER_RADIUS,
+                    knock.normalize() * config.BOSS_STOMP_PUSH,
+                )
+
+    def execute_boss_nova(self, enemy: Enemy) -> None:
+        bullet_damage = max(11.0, enemy.damage * config.BOSS_NOVA_DAMAGE_MULTIPLIER)
+        bullet_speed = config.BULLET_SPEED * 0.48 * self.enemy_bullet_speed_multiplier
+        for idx in range(config.BOSS_NOVA_BULLETS):
+            angle = math.tau * idx / config.BOSS_NOVA_BULLETS + self.rng.uniform(-0.04, 0.04)
+            direction = pygame.Vector2(math.cos(angle), math.sin(angle))
+            self.bullets.append(
+                Bullet(
+                    pos=enemy.pos.copy(),
+                    velocity=direction * bullet_speed,
+                    damage=bullet_damage,
+                    radius=config.BULLET_RADIUS + 1,
+                    knockback=config.PROJECTILE_BASE_KNOCKBACK,
+                    ttl=2.25,
+                    pierce=0,
+                    friendly=False,
+                    color=config.BULLET_ELITE_COLOR,
+                )
+            )
+        if enemy.aim_direction.length_squared() > 0:
+            self.enemy_shoot(
+                enemy,
+                enemy.aim_direction,
+                bullet_damage * 0.92,
+                config.BULLET_ELITE_COLOR,
+                spread=0.12,
+        )
+        self.spawn_particles(enemy.pos.copy(), config.BULLET_ELITE_COLOR, 18, 1.35, (1.8, 4.8), (0.16, 0.34))
+        self.floaters.append(FloatingText(enemy.pos.copy() + pygame.Vector2(0, -38), "震荡齐射", config.BULLET_ELITE_COLOR, 0.7))
+
+    def start_elite_burst(self, enemy: Enemy, direction: pygame.Vector2) -> None:
+        enemy.action_state = "elite_burst"
+        enemy.action_timer = float(config.ELITE_BURST_SIZE)
+        enemy.alt_special_timer = 0.0
+        if direction.length_squared() > 0:
+            enemy.aim_direction = direction.normalize()
+
     def update_enemies(self, dt: float) -> None:
         for enemy in self.enemies[:]:
             if enemy.shoot_cooldown > 0:
                 enemy.shoot_timer -= dt
-            nav_target, direct_engage = self.get_enemy_navigation_target(enemy.pos)
-            delta_to_nav = nav_target - enemy.pos
+            enemy.special_timer = max(0.0, enemy.special_timer - dt)
+            enemy.alt_special_timer = max(0.0, enemy.alt_special_timer - dt)
             delta_to_player = self.player_pos - enemy.pos
             has_los = self.has_line_of_sight(enemy.pos, self.player_pos, max(6, enemy.radius // 2))
+            if self.update_boss_action(enemy, dt):
+                continue
+            nav_target, direct_engage = self.get_enemy_navigation_target(enemy.pos, enemy.radius)
+            delta_to_nav = nav_target - enemy.pos
             move_delta = pygame.Vector2()
             if delta_to_nav.length_squared() > 0:
                 nav_direction = delta_to_nav.normalize()
@@ -2019,9 +2549,92 @@ class Game:
                         )
                         enemy.shoot_timer = enemy.shoot_cooldown
                         enemy.aim_direction = pygame.Vector2()
+                elif enemy.kind == "shotgunner":
+                    engage = direct_engage or has_los
+                    if engage and delta_to_player.length_squared() > 0:
+                        player_direction = delta_to_player.normalize()
+                        distance = delta_to_player.length()
+                        if distance > 220:
+                            move_delta += player_direction * enemy.speed * 1.06 * dt
+                        elif distance < 112:
+                            move_delta -= player_direction * enemy.speed * 0.58 * dt
+                        move_delta += pygame.Vector2(-player_direction.y, player_direction.x) * 12 * dt
+                        if enemy.shoot_timer <= 0 and distance <= 260:
+                            self.enemy_shoot(
+                                enemy,
+                                player_direction,
+                                self.get_enemy_projectile_damage(enemy),
+                                config.SHOTGUN_PELLET_COLOR,
+                                angles=[-config.SHOTGUNNER_PELLET_SPREAD, -0.16, 0.0, 0.16, config.SHOTGUNNER_PELLET_SPREAD],
+                                speed_scale=config.SHOTGUNNER_PELLET_SPEED_SCALE,
+                                ttl=config.SHOTGUNNER_PELLET_TTL,
+                                radius=config.BULLET_RADIUS,
+                                decay_visual=True,
+                            )
+                            enemy.shoot_timer = enemy.shoot_cooldown
+                    else:
+                        move_delta += nav_direction * enemy.speed * 0.94 * dt
+                elif enemy.kind == "elite":
+                    engage = direct_engage or has_los
+                    if engage and delta_to_player.length_squared() > 0:
+                        player_direction = delta_to_player.normalize()
+                        distance = delta_to_player.length()
+                        enemy.aim_direction = player_direction
+                        lateral = pygame.Vector2(-player_direction.y, player_direction.x)
+                        if enemy.action_state == "elite_burst":
+                            move_delta += lateral * 20 * dt
+                            if distance > 280:
+                                move_delta += player_direction * enemy.speed * 0.16 * dt
+                            elif distance < 150:
+                                move_delta -= player_direction * enemy.speed * 0.24 * dt
+                            if enemy.alt_special_timer <= 0 and enemy.action_timer > 0:
+                                jittered = enemy.aim_direction.rotate_rad(self.rng.uniform(-0.035, 0.035))
+                                self.enemy_shoot(
+                                    enemy,
+                                    jittered,
+                                    self.get_enemy_projectile_damage(enemy),
+                                    config.BULLET_ELITE_COLOR,
+                                )
+                                enemy.action_timer -= 1
+                                enemy.alt_special_timer = config.ELITE_BURST_INTERVAL
+                            if enemy.action_timer <= 0:
+                                enemy.action_state = ""
+                                enemy.action_timer = 0.0
+                                enemy.shoot_timer = enemy.shoot_cooldown
+                        else:
+                            if distance > 270:
+                                move_delta += player_direction * enemy.speed * 1.04 * dt
+                            elif distance < 180:
+                                move_delta -= player_direction * enemy.speed * 0.18 * dt
+                            move_delta += lateral * 10 * dt
+                            if enemy.shoot_timer <= 0:
+                                self.start_elite_burst(enemy, player_direction)
+                    else:
+                        if enemy.action_state == "elite_burst":
+                            enemy.action_state = ""
+                            enemy.action_timer = 0.0
+                        move_delta += nav_direction * enemy.speed * 0.96 * dt
                 else:
+                    if enemy.kind == "boss" and delta_to_player.length_squared() > 0:
+                        distance = delta_to_player.length()
+                        if has_los and distance <= config.BOSS_STOMP_TRIGGER_RANGE and enemy.special_timer <= 0:
+                            self.start_enemy_action(enemy, "stomp", config.BOSS_STOMP_TELEGRAPH)
+                            enemy.special_timer = config.BOSS_STOMP_COOLDOWN
+                            enemy.shoot_timer = max(enemy.shoot_timer, config.BOSS_STOMP_TELEGRAPH + 0.18)
+                            continue
+                        if (
+                            has_los
+                            and config.BOSS_NOVA_MIN_RANGE <= distance <= config.BOSS_NOVA_MAX_RANGE
+                            and enemy.alt_special_timer <= 0
+                        ):
+                            self.start_enemy_action(enemy, "nova", config.BOSS_NOVA_TELEGRAPH)
+                            enemy.alt_special_timer = config.BOSS_NOVA_COOLDOWN
+                            enemy.shoot_timer = max(enemy.shoot_timer, config.BOSS_NOVA_TELEGRAPH + 0.24)
+                            continue
                     speed_scale = 1.18 if enemy.kind == "charger" else 1.0
                     pursue_direction = delta_to_player.normalize() if direct_engage and delta_to_player.length_squared() > 0 else nav_direction
+                    if enemy.kind == "boss" and has_los and delta_to_player.length_squared() > 0 and delta_to_player.length() < 150:
+                        move_delta -= delta_to_player.normalize() * enemy.speed * 0.12 * dt
                     move_delta += pursue_direction * enemy.speed * speed_scale * dt
                     if enemy.kind in ("elite", "boss") and enemy.shoot_timer <= 0 and has_los and delta_to_player.length_squared() > 0:
                         self.enemy_shoot(
@@ -2048,21 +2661,28 @@ class Game:
         damage: float,
         color: tuple[int, int, int],
         spread: float = 0.0,
+        *,
+        angles: list[float] | tuple[float, ...] | None = None,
+        speed_scale: float = 0.62,
+        ttl: float = 2.0,
+        radius: int | None = None,
+        decay_visual: bool = False,
     ) -> None:
-        angles = [0.0] if spread <= 0 else [-spread, 0.0, spread]
-        for angle in angles:
+        shot_angles = list(angles) if angles is not None else ([0.0] if spread <= 0 else [-spread, 0.0, spread])
+        bullet_radius = config.BULLET_RADIUS + 1 if radius is None else radius
+        for angle in shot_angles:
             fired = direction.rotate_rad(angle)
-            self.bullets.append(
-                Bullet(
-                    pos=enemy.pos.copy(),
-                    velocity=fired * (config.BULLET_SPEED * 0.62 * self.enemy_bullet_speed_multiplier),
-                    damage=damage,
-                    radius=config.BULLET_RADIUS + 1,
-                    ttl=2.0,
-                    pierce=0,
-                    friendly=False,
-                    color=color,
-                )
+            self.spawn_projectile(
+                enemy.pos.copy(),
+                fired,
+                damage,
+                speed=config.BULLET_SPEED * speed_scale * self.enemy_bullet_speed_multiplier,
+                ttl=ttl,
+                radius=bullet_radius,
+                pierce=0,
+                friendly=False,
+                color=color,
+                decay_visual=decay_visual,
             )
 
     def update_pickups(self, dt: float) -> None:
@@ -2217,7 +2837,11 @@ class Game:
             pygame.draw.circle(self.screen, (255, 255, 255), visual_pos, pickup.radius, 2)
 
         for bullet in self.bullets:
-            pygame.draw.circle(self.screen, bullet.color, bullet.pos, bullet.radius)
+            radius = bullet.radius
+            if bullet.decay_visual and bullet.max_ttl > 0:
+                life = max(0.0, min(1.0, bullet.ttl / bullet.max_ttl))
+                radius = max(1, int(round(bullet.radius * (0.28 + 0.72 * life))))
+            pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
 
         for enemy in self.enemies:
             pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
@@ -2285,10 +2909,32 @@ class Game:
             pygame.draw.arc(self.screen, eye_color, mouth_rect, math.pi + 0.25, math.tau - 0.25, 3)
             return
 
-        if kind == "shooter":
+        if kind == "toxic_bloater":
             pygame.draw.circle(self.screen, eye_color, (int(pos.x - eye_dx), int(eye_y)), eye_size)
             pygame.draw.circle(self.screen, eye_color, (int(pos.x + eye_dx), int(eye_y)), eye_size)
-            pygame.draw.circle(self.screen, eye_color, (int(pos.x), int(pos.y + radius * 0.20)), max(2, eye_size - 1), 1)
+            mouth_rect = pygame.Rect(0, 0, int(radius * 0.64), max(8, int(radius * 0.28)))
+            mouth_rect.center = (int(pos.x), int(pos.y + radius * 0.24))
+            pygame.draw.arc(self.screen, eye_color, mouth_rect, 0.25, math.pi - 0.25, 2)
+            pygame.draw.circle(self.screen, accent, (int(pos.x), int(pos.y + radius * 0.42)), max(2, eye_size - 1), 1)
+            return
+
+        if kind == "reactor_bomber":
+            core = pygame.Rect(0, 0, max(10, int(radius * 0.8)), max(10, int(radius * 0.8)))
+            core.center = (int(pos.x), int(pos.y + radius * 0.05))
+            pygame.draw.rect(self.screen, eye_color, core, 2, border_radius=4)
+            pygame.draw.line(self.screen, eye_color, (core.left + 2, core.top + 2), (core.right - 2, core.bottom - 2), 2)
+            pygame.draw.line(self.screen, eye_color, (core.right - 2, core.top + 2), (core.left + 2, core.bottom - 2), 2)
+            pygame.draw.line(self.screen, eye_color, (int(pos.x - radius * 0.26), int(pos.y - radius * 0.28)), (int(pos.x + radius * 0.26), int(pos.y - radius * 0.28)), 2)
+            return
+
+        if kind in {"shooter", "shotgunner"}:
+            pygame.draw.circle(self.screen, eye_color, (int(pos.x - eye_dx), int(eye_y)), eye_size)
+            pygame.draw.circle(self.screen, eye_color, (int(pos.x + eye_dx), int(eye_y)), eye_size)
+            mouth_radius = max(2, eye_size - 1)
+            if kind == "shotgunner":
+                pygame.draw.line(self.screen, eye_color, (int(pos.x - mouth_radius * 1.5), int(pos.y + radius * 0.20)), (int(pos.x + mouth_radius * 1.5), int(pos.y + radius * 0.20)), 2)
+            else:
+                pygame.draw.circle(self.screen, eye_color, (int(pos.x), int(pos.y + radius * 0.20)), mouth_radius, 1)
             return
 
         if kind == "laser":
@@ -2325,6 +2971,20 @@ class Game:
 
     def draw_enemy_telegraphs(self) -> None:
         for enemy in self.enemies:
+            if enemy.kind == "boss" and enemy.action_state:
+                if enemy.action_state == "stomp":
+                    life = 1.0 - enemy.action_timer / max(0.01, config.BOSS_STOMP_TELEGRAPH)
+                    radius = int(config.BOSS_STOMP_RADIUS * (0.82 + 0.18 * life))
+                    pygame.draw.circle(self.screen, config.BULLET_SHOCK_COLOR, enemy.pos, radius, 3)
+                    pygame.draw.circle(self.screen, config.BULLET_SHOCK_COLOR, enemy.pos, enemy.radius + 8, 2)
+                elif enemy.action_state == "nova":
+                    life = 1.0 - enemy.action_timer / max(0.01, config.BOSS_NOVA_TELEGRAPH)
+                    radius = int(enemy.radius + 32 + 18 * life)
+                    pygame.draw.circle(self.screen, config.BULLET_ELITE_COLOR, enemy.pos, radius, 3)
+                    for idx in range(4):
+                        angle = math.tau * idx / 4 + life * 0.42
+                        direction = pygame.Vector2(math.cos(angle), math.sin(angle))
+                        pygame.draw.line(self.screen, config.BULLET_ELITE_COLOR, enemy.pos, enemy.pos + direction * radius, 2)
             if enemy.kind != "laser" or enemy.aim_direction.length_squared() <= 0:
                 continue
             telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
@@ -2417,58 +3077,146 @@ class Game:
             text = self.small_font.render("出口", True, config.TEXT_COLOR)
             self.screen.blit(text, text.get_rect(center=(pos.x, pos.y + 54)))
 
+    def draw_hud_panel(self, rect: pygame.Rect, border_color: tuple[int, int, int] | None = None) -> None:
+        border = config.ARENA_BORDER if border_color is None else border_color
+        overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(overlay, (*config.PANEL, config.HUD_PANEL_ALPHA), overlay.get_rect(), border_radius=16)
+        self.screen.blit(overlay, rect)
+        pygame.draw.rect(self.screen, border, rect, 2, border_radius=16)
+
+    def draw_hud_meter(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        ratio: float,
+        value_text: str,
+        fill: tuple[int, int, int],
+        background: tuple[int, int, int],
+    ) -> None:
+        ratio = max(0.0, min(1.0, ratio))
+        pygame.draw.rect(self.screen, background, rect, border_radius=8)
+        inner = rect.inflate(-2, -2)
+        if ratio > 0:
+            width = max(8, int(inner.width * ratio))
+            pygame.draw.rect(self.screen, fill, (inner.left, inner.top, width, inner.height), border_radius=7)
+        pygame.draw.rect(self.screen, (240, 244, 255), rect, 1, border_radius=8)
+        label_text = self.fit_text_line(label, self.tiny_font, max(24, rect.width // 2 - 12))
+        value_text = self.fit_text_line(value_text, self.tiny_font, max(24, rect.width // 2 - 12))
+        label_surf = self.tiny_font.render(label_text, True, config.TEXT_COLOR)
+        value_surf = self.tiny_font.render(value_text, True, config.TEXT_COLOR)
+        self.screen.blit(label_surf, (rect.left + 8, rect.centery - label_surf.get_height() // 2))
+        self.screen.blit(value_surf, (rect.right - value_surf.get_width() - 8, rect.centery - value_surf.get_height() // 2))
+
+    def draw_hud_chip(self, rect: pygame.Rect, label: str, value: str, accent: tuple[int, int, int]) -> None:
+        pygame.draw.rect(self.screen, (28, 32, 46), rect, border_radius=10)
+        pygame.draw.rect(self.screen, accent, rect, 2, border_radius=10)
+        accent_bar = pygame.Rect(rect.left + 4, rect.top + 4, 4, max(4, rect.height - 8))
+        pygame.draw.rect(self.screen, accent, accent_bar, border_radius=2)
+        chip_text = self.fit_text_line(f"{label} {value}", self.tiny_font, rect.width - 18)
+        chip_surf = self.tiny_font.render(chip_text, True, config.TEXT_COLOR)
+        self.screen.blit(chip_surf, chip_surf.get_rect(center=(rect.centerx + 3, rect.centery)))
+
     def draw_hud(self) -> None:
         hp_ratio = self.player_hp / self.player_max_hp
         shield_ratio = 0.0 if self.player_max_shield <= 0 else self.player_shield / self.player_max_shield
         xp_ratio = self.xp / self.xp_to_level
         room_label = self.room_type_label(self.current_room_state.room_type) if self.current_room_state is not None else "未进入房间"
-        pygame.draw.rect(self.screen, config.PANEL, (20, 18, 360, 128), border_radius=12)
-        pygame.draw.rect(self.screen, (48, 30, 30), (34, 38, 240, 16), border_radius=8)
-        pygame.draw.rect(self.screen, (80, 220, 145), (34, 38, 240 * hp_ratio, 16), border_radius=8)
-        pygame.draw.rect(self.screen, (26, 42, 76), (34, 61, 240, 12), border_radius=6)
-        pygame.draw.rect(self.screen, (112, 198, 255), (34, 61, 240 * shield_ratio, 12), border_radius=6)
-        pygame.draw.rect(self.screen, (38, 48, 82), (34, 80, 240, 14), border_radius=7)
-        pygame.draw.rect(self.screen, (98, 168, 255), (34, 80, 240 * xp_ratio, 14), border_radius=7)
+        room_kind = self.current_room_state.room_type if self.current_room_state is not None else "start"
+        badge_color = {
+            "boss": config.BOSS_COLOR,
+            "elite": config.BULLET_ELITE_COLOR,
+            "shop": config.CREDIT_COLOR,
+            "treasure": config.ITEM_COLOR,
+        }.get(room_kind, config.PLAYER_COLOR)
 
-        info = [
-            f"生命 {int(self.player_hp)}/{int(self.player_max_hp)}",
-            f"护盾 {int(self.player_shield)}/{int(self.player_max_shield)}",
-            f"等级 {self.level}",
-            f"晶片 {self.credits}",
-        ]
-        for idx, text in enumerate(info):
-            surf = self.small_font.render(text, True, config.TEXT_COLOR)
-            self.screen.blit(surf, (34 + idx * 76, 10))
+        hud_left = 16
+        hud_top = 16
+        panel_width = 328
+        status_panel = pygame.Rect(hud_left, hud_top, panel_width, 136)
+        detail_panel = pygame.Rect(hud_left, status_panel.bottom + 8, panel_width, 82)
+        self.draw_hud_panel(status_panel)
+        self.draw_hud_panel(detail_panel, border_color=config.CARD_HILITE)
 
-        floor_info = self.small_font.render(f"楼层 {self.floor_index}   当前 {room_label}   击杀 {self.kills}", True, config.MUTED_TEXT)
-        self.screen.blit(floor_info, (34, 102))
-        loadout = self.small_font.render(
-            f"机体 {self.selected_character.name}   武器 {self.selected_weapon.name}   已清战斗房 {self.rooms_cleared}",
-            True,
-            config.MUTED_TEXT,
+        self.screen.blit(self.tiny_font.render("作战面板", True, config.MUTED_TEXT), (status_panel.left + 12, status_panel.top + 10))
+        floor_label = self.small_font.render(f"第 {self.floor_index} 层", True, config.TEXT_COLOR)
+        self.screen.blit(floor_label, (status_panel.left + 12, status_panel.top + 24))
+
+        badge = pygame.Rect(status_panel.right - 102, status_panel.top + 12, 88, 24)
+        pygame.draw.rect(self.screen, config.CARD, badge, border_radius=12)
+        pygame.draw.rect(self.screen, badge_color, badge, 2, border_radius=12)
+        badge_text = self.fit_text_line(room_label, self.tiny_font, badge.width - 12)
+        badge_surf = self.tiny_font.render(badge_text, True, config.TEXT_COLOR)
+        self.screen.blit(badge_surf, badge_surf.get_rect(center=badge.center))
+
+        meter_width = status_panel.width - 24
+        self.draw_hud_meter(
+            pygame.Rect(status_panel.left + 12, status_panel.top + 52, meter_width, 15),
+            "生命",
+            hp_ratio,
+            f"{int(self.player_hp)}/{int(self.player_max_hp)}",
+            (80, 220, 145),
+            (48, 30, 30),
         )
-        self.screen.blit(loadout, (34, 118))
+        self.draw_hud_meter(
+            pygame.Rect(status_panel.left + 12, status_panel.top + 73, meter_width, 13),
+            "护盾",
+            shield_ratio,
+            f"{int(self.player_shield)}/{int(self.player_max_shield)}",
+            (112, 198, 255),
+            (26, 42, 76),
+        )
+        self.draw_hud_meter(
+            pygame.Rect(status_panel.left + 12, status_panel.top + 92, meter_width, 13),
+            "经验",
+            xp_ratio,
+            f"{self.xp}/{self.xp_to_level}",
+            (98, 168, 255),
+            (38, 48, 82),
+        )
+
+        chip_gap = 8
+        chip_width = (status_panel.width - 24 - chip_gap * 3) // 4
+        chip_y = status_panel.bottom - 26
+        chip_specs = (
+            ("等级", str(self.level), config.XP_COLOR),
+            ("晶片", str(self.credits), config.CREDIT_COLOR),
+            ("击杀", str(self.kills), config.PLAYER_COLOR),
+            ("清房", str(self.rooms_cleared), config.SHIELD_COLOR),
+        )
+        for idx, (label, value, accent) in enumerate(chip_specs):
+            chip_rect = pygame.Rect(status_panel.left + 12 + idx * (chip_width + chip_gap), chip_y, chip_width, 18)
+            self.draw_hud_chip(chip_rect, label, value, accent)
+
+        self.screen.blit(self.tiny_font.render("当前部署", True, config.MUTED_TEXT), (detail_panel.left + 12, detail_panel.top + 9))
+        loadout_line = self.fit_text_line(
+            f"{self.selected_character.name} / {self.selected_weapon.name}",
+            self.small_font,
+            detail_panel.width - 24,
+        )
+        self.screen.blit(self.small_font.render(loadout_line, True, config.TEXT_COLOR), (detail_panel.left + 12, detail_panel.top + 24))
 
         if self.weapon_mode == "laser":
-            weapon_text = f"武器 {self.selected_weapon.name}  伤害 {int(self.player_damage)}  射速 {self.fire_cooldown:.2f}s  宽度 {self.player_beam_width}  暴击 {int(self.player_crit_chance * 100)}%"
-            if self.player_bullet_bounces > 0:
-                weapon_text += f"  反射 {self.player_bullet_bounces}"
-        else:
-            weapon_text = (
-                f"武器 {self.selected_weapon.name}  伤害 {int(self.player_damage)}  射速 {self.fire_cooldown:.2f}s"
-                f"  准度 {self.get_accuracy_rating()}%  暴击 {int(self.player_crit_chance * 100)}%  穿透 {self.bullet_pierce}"
+            detail_text = (
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 宽度 {self.player_beam_width}"
+                f" · 暴击 {int(self.player_crit_chance * 100)}% · 反射 {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
-            if self.multishot > 0:
-                weapon_text += f"  散射 {self.multishot}"
-            if self.player_bullet_bounces > 0:
-                weapon_text += f"  反弹 {self.player_bullet_bounces}"
-        weapons = self.small_font.render(weapon_text, True, config.MUTED_TEXT)
-        self.screen.blit(weapons, (20, config.HEIGHT - 34))
+        elif self.is_shotgun_weapon():
+            detail_text = (
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 弹丸 {self.player_shotgun_pellets}"
+                f" · 距离 {self.player_projectile_ttl:.2f}s · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+            )
+        else:
+            detail_text = (
+                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 准度 {self.get_accuracy_rating()}%"
+                f" · 穿透 {self.bullet_pierce} · 散射 {self.multishot} · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+            )
+        for idx, line in enumerate(self.wrap_text(detail_text, self.tiny_font, detail_panel.width - 24, 2)):
+            self.screen.blit(self.tiny_font.render(line, True, config.MUTED_TEXT), (detail_panel.left + 12, detail_panel.top + 44 + idx * 14))
 
         dash_text = "就绪" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
         pulse_text = "就绪" if self.pulse_timer <= 0 else f"{self.pulse_timer:.1f}s"
-        skills = self.small_font.render(f"冲刺 {dash_text}  脉冲 {pulse_text}", True, config.MUTED_TEXT)
-        self.screen.blit(skills, (20, config.HEIGHT - 58))
+        skills = self.small_font.render(f"冲刺 {dash_text}  ·  脉冲 {pulse_text}", True, config.MUTED_TEXT)
+        self.screen.blit(skills, (16, config.HEIGHT - 34))
         prompt = self.current_interaction_prompt()
         if prompt:
             prompt_surf = self.font.render(prompt, True, config.PLAYER_HIT_COLOR)
@@ -2519,6 +3267,14 @@ class Game:
             self.draw_reward_room()
         elif self.mode == "supply_room":
             self.draw_supply_room()
+        elif self.mode == "floor_confirm":
+            self.draw_center_card(
+                "确认下潜",
+                f"是否进入第 {self.floor_index + 1} 层？",
+                "按 E / Enter 确认，Esc 取消",
+            )
+        elif self.mode == "floor_transition":
+            self.draw_floor_transition()
         elif self.room_clear_delay > 0:
             title = "战利品回收中" if self.pickups else "区域已清空"
             surf = self.big_font.render(title, True, config.TEXT_COLOR)
@@ -2538,6 +3294,34 @@ class Game:
             self.font.render(prompt, True, config.PLAYER_COLOR),
         ]
         ys = [panel.top + 48, panel.top + 112, panel.top + 170]
+        for surf, y in zip(texts, ys):
+            self.screen.blit(surf, surf.get_rect(center=(panel.centerx, y)))
+
+    def draw_floor_transition(self) -> None:
+        total = max(0.01, self.floor_transition_total)
+        progress = 1.0 - self.floor_transition_timer / total
+        fade = progress / 0.5 if progress < 0.5 else (1.0 - progress) / 0.5
+        fade = max(0.0, min(1.0, fade))
+        shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, int(230 * fade)))
+        self.screen.blit(shade, (0, 0))
+        title = "下潜中..." if not self.floor_transition_switched else f"第 {self.floor_index} 层"
+        subtitle = (
+            f"正在进入第 {self.floor_transition_target} 层"
+            if not self.floor_transition_switched
+            else "舱门解锁，准备继续推进"
+        )
+        prompt = "请稍候"
+        panel = pygame.Rect(0, 0, 480, 210)
+        panel.center = (config.WIDTH / 2, config.HEIGHT / 2)
+        pygame.draw.rect(self.screen, config.PANEL, panel, border_radius=18)
+        pygame.draw.rect(self.screen, config.ARENA_BORDER, panel, 3, border_radius=18)
+        texts = [
+            self.big_font.render(title, True, config.TEXT_COLOR),
+            self.font.render(subtitle, True, config.MUTED_TEXT),
+            self.font.render(prompt, True, config.PLAYER_COLOR),
+        ]
+        ys = [panel.top + 46, panel.top + 102, panel.top + 154]
         for surf, y in zip(texts, ys):
             self.screen.blit(surf, surf.get_rect(center=(panel.centerx, y)))
 
@@ -2692,23 +3476,61 @@ class Game:
         else:
             title_text, subtitle = TITLE_PANEL_INFO[self.title_panel]
             header = pygame.Rect(44, 116, 1192, 60)
+            viewport = self.get_title_panel_viewport_rect()
+            footer = pygame.Rect(44, 612, 1192, 60)
             pygame.draw.rect(self.screen, config.CARD, header, border_radius=16)
             pygame.draw.rect(self.screen, config.CARD_HILITE, header, 2, border_radius=16)
             self.screen.blit(self.font.render(title_text, True, config.TEXT_COLOR), (header.left + 18, header.top + 10))
             self.screen.blit(self.small_font.render(subtitle, True, config.MUTED_TEXT), (header.left + 18, header.top + 34))
+            pygame.draw.rect(self.screen, config.CARD, viewport.inflate(0, 8), border_radius=18)
+            pygame.draw.rect(self.screen, config.CARD_HILITE, viewport.inflate(0, 8), 2, border_radius=18)
             options = self.current_title_options()
             selected_key = self.selected_stage.key if self.title_panel == "stage" else self.selected_character.key if self.title_panel == "character" else self.selected_weapon.key
-            for idx, (option, rect) in enumerate(zip(options, self.get_title_panel_option_rects(len(options)))):
+            option_rects = self.get_title_panel_option_rects(len(options))
+            previous_clip = self.screen.get_clip()
+            self.screen.set_clip(viewport)
+            for idx, (option, rect) in enumerate(zip(options, option_rects)):
                 active = option.key == selected_key
-                hovered = rect.collidepoint(mouse_pos)
+                hovered = rect.collidepoint(mouse_pos) and viewport.collidepoint(mouse_pos)
                 border = config.PLAYER_COLOR if active else (config.CREDIT_COLOR if hovered else config.CARD_HILITE)
-                pygame.draw.rect(self.screen, config.CARD, rect, border_radius=16)
+                fill = (44, 52, 76) if active else config.CARD
+                pygame.draw.rect(self.screen, fill, rect, border_radius=16)
                 pygame.draw.rect(self.screen, border, rect, 2, border_radius=16)
-                self.screen.blit(self.small_font.render(str(idx + 1), True, border), (rect.left + 16, rect.top + 14))
-                self.screen.blit(self.font.render(option.name, True, config.TEXT_COLOR), (rect.left + 48, rect.top + 10))
-                self.screen.blit(self.small_font.render(option.description, True, config.MUTED_TEXT), (rect.left + 48, rect.top + 38))
-                passive = option.passive if hasattr(option, "passive") else f"\u8d77\u59cb\u96be\u5ea6\uff1a{option.start_room}"
-                self.screen.blit(self.small_font.render(passive, True, config.TEXT_COLOR), (rect.left + 48, rect.top + 58))
+                index_label = self.small_font.render(str(idx + 1), True, border)
+                self.screen.blit(index_label, (rect.left + 16, rect.top + 12))
+                self.screen.blit(self.font.render(option.name, True, config.TEXT_COLOR), (rect.left + 54, rect.top + 10))
+                if active:
+                    active_badge = pygame.Rect(rect.right - 98, rect.top + 12, 82, 24)
+                    pygame.draw.rect(self.screen, config.PANEL, active_badge, border_radius=12)
+                    pygame.draw.rect(self.screen, config.PLAYER_COLOR, active_badge, 2, border_radius=12)
+                    badge_text = self.small_font.render("已选择", True, config.TEXT_COLOR)
+                    self.screen.blit(badge_text, badge_text.get_rect(center=active_badge.center))
+                desc_lines = self.wrap_text(option.description, self.small_font, rect.width - 92, 2 if self.title_panel == "weapon" else 1)
+                passive = option.passive if hasattr(option, "passive") else f"起始难度：{option.start_room}"
+                passive_lines = self.wrap_text(passive, self.small_font, rect.width - 92, 2)
+                line_y = rect.top + 40
+                for line in desc_lines:
+                    self.screen.blit(self.small_font.render(line, True, config.MUTED_TEXT), (rect.left + 54, line_y))
+                    line_y += 16
+                for line in passive_lines:
+                    self.screen.blit(self.small_font.render(line, True, config.TEXT_COLOR), (rect.left + 54, line_y))
+                    line_y += 16
+            self.screen.set_clip(previous_clip)
+
+            if self.title_panel_uses_scroll() and options:
+                max_scroll = self.max_title_panel_scroll(count=len(options))
+                if max_scroll > 0:
+                    track = pygame.Rect(viewport.right - 12, viewport.top + 6, 6, viewport.height - 12)
+                    pygame.draw.rect(self.screen, (54, 60, 82), track, border_radius=4)
+                    thumb_h = max(44, int(track.height * (viewport.height / self.title_panel_content_height(len(options)))))
+                    thumb_y = track.top + int((track.height - thumb_h) * (self.title_panel_scroll / max_scroll))
+                    pygame.draw.rect(self.screen, config.PLAYER_COLOR, (track.left, thumb_y, track.width, thumb_h), border_radius=4)
+
+            pygame.draw.rect(self.screen, config.CARD, footer, border_radius=16)
+            pygame.draw.rect(self.screen, config.CARD_HILITE, footer, 2, border_radius=16)
+            hint_text = "滚轮 / ↑↓ 滑动列表，数字键可直接选择" if self.title_panel_uses_scroll() else "点击卡片或按数字键立即选择"
+            hint = self.small_font.render(hint_text, True, config.MUTED_TEXT)
+            self.screen.blit(hint, (footer.left + 18, footer.centery - hint.get_height() // 2))
             self.draw_action_button(self.get_title_panel_back_button(), "\u8fd4\u56de")
             self.draw_action_button(self.get_title_panel_start_button(), "\u5f00\u5c40")
 
@@ -2761,11 +3583,19 @@ class Game:
             self.mode = "dead"
             self.message = "信号中断"
 
-    def get_enemy_navigation_target(self, pos: pygame.Vector2) -> tuple[pygame.Vector2, bool]:
-        if self.room_layout is None or len(self.room_layout.chambers) <= 1:
+    def get_enemy_navigation_target(self, pos: pygame.Vector2, radius: int) -> tuple[pygame.Vector2, bool]:
+        if self.room_layout is None:
             return self.player_pos.copy(), True
-        if self.has_line_of_sight(pos, self.player_pos, 6):
+        los_radius = max(6, radius // 2)
+        if self.has_line_of_sight(pos, self.player_pos, los_radius):
             return self.player_pos.copy(), True
+        field = self.get_navigation_field(radius)
+        if field is not None:
+            waypoint = field.next_waypoint(pos, self.player_pos)
+            if waypoint is not None and waypoint.distance_squared_to(pos) > 4:
+                return waypoint, False
+        if len(self.room_layout.chambers) <= 1:
+            return self.player_pos.copy(), False
         enemy_cell = self.room_layout.closest_cell(pos)
         player_cell = self.room_layout.closest_cell(self.player_pos)
         if enemy_cell is None or player_cell is None or enemy_cell == player_cell:
