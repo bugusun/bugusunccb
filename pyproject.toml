@@ -1,0 +1,14 @@
+[project]
+name = "bugusunccb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pygame>=2.6.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.10",
+]
