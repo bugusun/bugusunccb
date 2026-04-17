@@ -13,6 +13,7 @@ import pygame
 from . import config
 from .balance import (
     SHOP_OFFER_POOL,
+    boss_floor_hp_multiplier,
     enemy_attack_cooldown,
     enemy_credit_drop,
     enemy_scaling,
@@ -108,8 +109,132 @@ class RoomState:
     enemies: list[Enemy] = field(default_factory=list)
     pickups: list[Pickup] = field(default_factory=list)
     shop_offers: list[ShopOffer] = field(default_factory=list)
+    shop_purchases: int = 0
     room_event: RoomEventState | None = None
     challenge_tag: str | None = None
+    retreat_door: str | None = None
+    nav_version: int = 0
+
+
+@dataclass
+class EnemyNavigationPlan:
+    target: pygame.Vector2
+    has_los: bool
+    direct_engage: bool
+    mode: str
+    blocker: RoomObstacle | None = None
+
+
+@dataclass
+class ObstacleSpatialIndex:
+    cell_size: int
+    obstacles: tuple[RoomObstacle, ...] = field(default_factory=tuple)
+    buckets: dict[tuple[int, int], tuple[RoomObstacle, ...]] = field(
+        default_factory=dict
+    )
+
+    @classmethod
+    def build(
+        cls, obstacles: Sequence[RoomObstacle], cell_size: int
+    ) -> "ObstacleSpatialIndex":
+        size = max(24, int(cell_size))
+        built = cls(cell_size=size, obstacles=tuple(obstacles))
+        bucket_lists: dict[tuple[int, int], list[RoomObstacle]] = {}
+        for obstacle in built.obstacles:
+            rect = obstacle.rect
+            left = rect.left // size
+            right = max(rect.left, rect.right - 1) // size
+            top = rect.top // size
+            bottom = max(rect.top, rect.bottom - 1) // size
+            for gx in range(left, right + 1):
+                for gy in range(top, bottom + 1):
+                    bucket_lists.setdefault((gx, gy), []).append(obstacle)
+        built.buckets = {
+            cell: tuple(items) for cell, items in bucket_lists.items()
+        }
+        return built
+
+    def query_rect(self, rect: pygame.Rect) -> tuple[RoomObstacle, ...]:
+        if not self.obstacles:
+            return ()
+        left = rect.left // self.cell_size
+        right = max(rect.left, rect.right - 1) // self.cell_size
+        top = rect.top // self.cell_size
+        bottom = max(rect.top, rect.bottom - 1) // self.cell_size
+        matches: list[RoomObstacle] = []
+        seen: set[int] = set()
+        for gx in range(left, right + 1):
+            for gy in range(top, bottom + 1):
+                for obstacle in self.buckets.get((gx, gy), ()):
+                    marker = id(obstacle)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    matches.append(obstacle)
+        return tuple(matches)
+
+    def query_circle(
+        self, pos: pygame.Vector2, radius: float
+    ) -> tuple[RoomObstacle, ...]:
+        diameter = max(1, int(math.ceil(radius * 2)))
+        rect = pygame.Rect(0, 0, diameter, diameter)
+        rect.center = (round(pos.x), round(pos.y))
+        return self.query_rect(rect)
+
+    def query_segment(
+        self, start: pygame.Vector2, end: pygame.Vector2, padding: int = 0
+    ) -> tuple[RoomObstacle, ...]:
+        left = int(min(start.x, end.x))
+        top = int(min(start.y, end.y))
+        width = max(1, int(abs(end.x - start.x)))
+        height = max(1, int(abs(end.y - start.y)))
+        rect = pygame.Rect(left, top, width, height).inflate(
+            padding * 2 + 2, padding * 2 + 2
+        )
+        return self.query_rect(rect)
+
+
+@dataclass
+class EnemySpatialIndex:
+    cell_size: int
+    enemies: tuple[Enemy, ...] = field(default_factory=tuple)
+    buckets: dict[tuple[int, int], tuple[Enemy, ...]] = field(default_factory=dict)
+
+    @classmethod
+    def build(
+        cls, enemies: Sequence[Enemy], cell_size: int
+    ) -> "EnemySpatialIndex":
+        size = max(24, int(cell_size))
+        built = cls(cell_size=size, enemies=tuple(enemies))
+        bucket_lists: dict[tuple[int, int], list[Enemy]] = {}
+        for enemy in built.enemies:
+            gx = int(enemy.pos.x) // size
+            gy = int(enemy.pos.y) // size
+            bucket_lists.setdefault((gx, gy), []).append(enemy)
+        built.buckets = {
+            cell: tuple(items) for cell, items in bucket_lists.items()
+        }
+        return built
+
+    def query_circle(self, pos: pygame.Vector2, radius: float) -> tuple[Enemy, ...]:
+        if not self.enemies:
+            return ()
+        cell_radius = max(1, int(math.ceil(radius / max(1, self.cell_size))))
+        center_x = int(pos.x) // self.cell_size
+        center_y = int(pos.y) // self.cell_size
+        matches: list[Enemy] = []
+        seen: set[int] = set()
+        max_distance_sq = radius * radius
+        for gx in range(center_x - cell_radius, center_x + cell_radius + 1):
+            for gy in range(center_y - cell_radius, center_y + cell_radius + 1):
+                for enemy in self.buckets.get((gx, gy), ()):
+                    marker = id(enemy)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    if enemy.pos.distance_squared_to(pos) <= max_distance_sq:
+                        matches.append(enemy)
+        return tuple(matches)
 
 
 class Game:
@@ -187,10 +312,12 @@ class Game:
         self.pulse_effect_timer = 0.0
         self.pulse_effect_total = 0.0
         self.basketball_damage = float(config.BASKETBALL_DAMAGE)
+        self.basketball_radius = float(config.BASKETBALL_RADIUS)
         self.basketball_speed_scale = float(config.BASKETBALL_SPEED_SCALE)
         self.basketball_upgrade_level = 0
         self.mamba_skill_damage = float(config.MAMBA_SKILL_DAMAGE)
         self.mamba_skill_stun_duration = float(config.MAMBA_SKILL_STUN_DURATION)
+        self.mamba_skill_half_angle = float(config.MAMBA_SKILL_HALF_ANGLE)
         self.mamba_upgrade_level = 0
         self.skill_cast_key: str | None = None
         self.skill_cast_timer = 0.0
@@ -208,8 +335,10 @@ class Game:
         self.last_move = pygame.Vector2(1, 0)
         self.player_revives_remaining = 0
         self.kunkun_chip_barrage_used = False
+        self.vanguard_shockwave_used = False
         self.q_skill_hold_active = False
         self.q_skill_hold_timer = 0.0
+        self.auto_aim_target = pygame.Vector2()
 
         self.level = 1
         self.xp = 0
@@ -226,7 +355,10 @@ class Game:
         self.current_room_state: RoomState | None = None
         self.floor_map: FloorMap | None = None
         self.room_states: dict[int, RoomState] = {}
-        self.navigation_fields: dict[int, NavigationField] = {}
+        self.navigation_fields: dict[tuple[int, int, int], NavigationField] = {}
+        self.obstacle_index = ObstacleSpatialIndex(config.OBSTACLE_QUERY_CELL_SIZE)
+        self.enemy_index = EnemySpatialIndex(config.ENEMY_SPATIAL_QUERY_CELL_SIZE)
+        self.obstacle_rect_cache: tuple[pygame.Rect, ...] = ()
         self.enemy_pause_timer = 0.0
         self.floor_entry_enemy_grace_pending = False
         self.screen_shake_timer = 0.0
@@ -247,6 +379,7 @@ class Game:
         self.gas_clouds: list[GasCloud] = []
         self.player_buffs: list[ActivePlayerBuff] = []
         self.obstacles: list[RoomObstacle] = []
+        self.refresh_obstacle_state()
         self.room_layout: RoomLayout | None = None
         self.room_clear_delay = 0.0
         self.mode = "title"
@@ -312,8 +445,34 @@ class Game:
             config.ARENA_HEIGHT,
         )
 
-    def obstacle_rects(self) -> list[pygame.Rect]:
-        return [obstacle.rect for obstacle in self.obstacles]
+    def obstacle_rects(self) -> tuple[pygame.Rect, ...]:
+        return self.obstacle_rect_cache
+
+    def refresh_obstacle_state(self) -> None:
+        self.obstacle_rect_cache = tuple(obstacle.rect for obstacle in self.obstacles)
+        self.obstacle_index = ObstacleSpatialIndex.build(
+            self.obstacles, config.OBSTACLE_QUERY_CELL_SIZE
+        )
+
+    def refresh_enemy_spatial_index(self) -> None:
+        self.enemy_index = EnemySpatialIndex.build(
+            self.enemies, config.ENEMY_SPATIAL_QUERY_CELL_SIZE
+        )
+
+    def query_obstacles_near(
+        self, pos: pygame.Vector2, radius: float
+    ) -> tuple[RoomObstacle, ...]:
+        return self.obstacle_index.query_circle(pos, radius)
+
+    def query_obstacles_in_segment(
+        self, start: pygame.Vector2, end: pygame.Vector2, padding: int = 0
+    ) -> tuple[RoomObstacle, ...]:
+        return self.obstacle_index.query_segment(start, end, padding)
+
+    def query_enemies_near(
+        self, pos: pygame.Vector2, radius: float
+    ) -> tuple[Enemy, ...]:
+        return self.enemy_index.query_circle(pos, radius)
 
     def load_best_record(self) -> dict[str, int]:
         default = {"best_score": 0, "best_floor": 0, "best_rooms": 0}
@@ -508,25 +667,88 @@ class Game:
                 remaining.append(wave)
         self.explosion_waves = remaining
 
-    def get_enemy_avoidance(self, enemy: Enemy) -> pygame.Vector2:
+    def get_enemy_obstacle_avoidance(self, enemy: Enemy) -> pygame.Vector2:
         avoid = pygame.Vector2()
-        for obstacle in self.obstacles:
-            rect = obstacle.rect.inflate(40, 40)
-            if not rect.collidepoint(enemy.pos.x, enemy.pos.y):
+        influence_radius = enemy.radius + config.ENEMY_OBSTACLE_AVOID_RADIUS
+        for obstacle in self.query_obstacles_near(enemy.pos, influence_radius):
+            rect = obstacle.rect.inflate(18, 18)
+            nearest_x = max(rect.left, min(enemy.pos.x, rect.right))
+            nearest_y = max(rect.top, min(enemy.pos.y, rect.bottom))
+            delta = enemy.pos - pygame.Vector2(nearest_x, nearest_y)
+            dist_sq = delta.length_squared()
+            if dist_sq <= 0 or dist_sq >= influence_radius * influence_radius:
                 continue
-            center = pygame.Vector2(rect.center)
-            delta = enemy.pos - center
-            if delta.length_squared() > 0:
-                weight = 1.0 if getattr(obstacle, "tag", "normal") == "wall" else 0.78
-                avoid += delta.normalize() * weight
-        for other in self.enemies:
+            distance = dist_sq**0.5
+            weight = 1.0 - distance / max(1.0, influence_radius)
+            if getattr(obstacle, "tag", "normal") == "wall":
+                weight *= 1.2
+            avoid += delta.normalize() * weight
+        return avoid
+
+    def get_enemy_separation(self, enemy: Enemy) -> pygame.Vector2:
+        avoid = pygame.Vector2()
+        separation_radius = config.ENEMY_SEPARATION_RADIUS
+        for other in self.query_enemies_near(enemy.pos, separation_radius):
             if other is enemy:
                 continue
             delta = enemy.pos - other.pos
             dist_sq = delta.length_squared()
-            if 0 < dist_sq < 52 * 52:
-                avoid += delta.normalize() * (52 / max(12, dist_sq**0.5))
+            if dist_sq <= 0 or dist_sq >= separation_radius * separation_radius:
+                continue
+            avoid += delta.normalize() * (separation_radius / max(12.0, dist_sq**0.5))
         return avoid
+
+    def get_enemy_avoidance(self, enemy: Enemy) -> pygame.Vector2:
+        avoid = self.get_enemy_obstacle_avoidance(enemy)
+        separation = self.get_enemy_separation(enemy)
+        if separation.length_squared() > 0:
+            avoid += separation.normalize() * config.ENEMY_STEER_SEPARATION_WEIGHT
+        return avoid
+
+    def blend_enemy_steering(
+        self,
+        enemy: Enemy,
+        move_delta: pygame.Vector2,
+        nav_target: pygame.Vector2,
+    ) -> pygame.Vector2:
+        base = move_delta.copy()
+        if base.length_squared() <= 0:
+            base = nav_target - enemy.pos
+        if base.length_squared() <= 0:
+            return move_delta
+
+        steering = base.normalize()
+        obstacle_avoid = self.get_enemy_obstacle_avoidance(enemy)
+        separation = self.get_enemy_separation(enemy)
+        nearby_count = max(
+            0,
+            len(
+                self.query_enemies_near(
+                    enemy.pos, config.ENEMY_SEPARATION_RADIUS + enemy.radius
+                )
+            )
+            - 1,
+        )
+        crowd_scale = 1.0 + min(0.85, nearby_count * 0.16)
+        if obstacle_avoid.length_squared() > 0:
+            steering += (
+                obstacle_avoid.normalize() * config.ENEMY_STEER_OBSTACLE_WEIGHT
+            )
+        if separation.length_squared() > 0:
+            steering += (
+                separation.normalize()
+                * config.ENEMY_STEER_SEPARATION_WEIGHT
+                * crowd_scale
+            )
+        if steering.length_squared() <= 0:
+            return move_delta
+
+        magnitude = (
+            move_delta.length()
+            if move_delta.length_squared() > 0
+            else enemy.speed * 0.72 / config.FPS
+        )
+        return steering.normalize() * magnitude
 
     def move_enemy_with_navigation(
         self,
@@ -534,7 +756,8 @@ class Game:
         desired_delta: pygame.Vector2,
         nav_target: pygame.Vector2,
         dt: float,
-    ) -> None:
+    ) -> pygame.Vector2:
+        start = enemy.pos.copy()
         moved = self.move_circle_with_collisions(
             enemy.pos, enemy.radius, desired_delta
         )
@@ -542,7 +765,7 @@ class Game:
             desired_delta.length_squared() <= 16
             or moved.length_squared() >= desired_delta.length_squared() * 0.18
         ):
-            return
+            return enemy.pos - start
 
         candidate_dirs: list[pygame.Vector2] = []
         toward_target = nav_target - enemy.pos
@@ -583,8 +806,9 @@ class Game:
                 normalized * nudge_distance,
             )
             if extra.length_squared() > best_gain + 4:
-                return
+                return enemy.pos - start
             enemy.pos = before
+        return enemy.pos - start
 
     def start_run(self, start_room: int | None = None) -> None:
         self.restart_run()
@@ -645,15 +869,24 @@ class Game:
             "mamba_smash": self.try_mamba_smash,
         }.get(self.active_skill_key)
 
+    def vanguard_shockwave_available(self) -> bool:
+        return (
+            self.selected_character.key == "vanguard"
+            and self.active_skill_key == "pulse"
+        )
+
+    def can_begin_q_hold(self) -> bool:
+        return (
+            (self.selected_character.key == "kunkun" and self.active_skill_key == "basketball")
+            or self.vanguard_shockwave_available()
+        )
+
     def reset_q_skill_hold_state(self) -> None:
         self.q_skill_hold_active = False
         self.q_skill_hold_timer = 0.0
 
     def begin_q_skill_hold(self) -> bool:
-        if (
-            self.selected_character.key != "kunkun"
-            or self.active_skill_key != "basketball"
-        ):
+        if not self.can_begin_q_hold():
             return False
         self.q_skill_hold_active = True
         self.q_skill_hold_timer = 0.0
@@ -664,10 +897,17 @@ class Game:
             return False
         hold_time = self.q_skill_hold_timer
         self.reset_q_skill_hold_state()
-        if hold_time >= config.KUNKUN_BARRAGE_HOLD_TIME:
-            self.try_kunkun_chip_barrage()
-        else:
-            self.try_use_active_skill()
+        if self.selected_character.key == "kunkun" and self.active_skill_key == "basketball":
+            if hold_time >= config.KUNKUN_BARRAGE_HOLD_TIME:
+                self.try_kunkun_chip_barrage()
+            else:
+                self.try_use_active_skill()
+            return True
+        if self.vanguard_shockwave_available():
+            if hold_time >= config.VANGUARD_SHOCKWAVE_HOLD_TIME:
+                self.try_vanguard_shockwave()
+            else:
+                self.try_use_active_skill()
         return True
 
     def active_skill_status_text(self) -> str:
@@ -762,6 +1002,30 @@ class Game:
             FloatingText(anchor, f"+{int(round(healed))} 生命", config.HEAL_COLOR, 0.6)
         )
         return healed
+
+    @staticmethod
+    def scaled_ratio_amount(base_value: float, ratio: float, minimum: float = 1.0) -> float:
+        if base_value <= 0 or ratio <= 0:
+            return 0.0
+        return max(minimum, base_value * ratio)
+
+    def restore_player_shield(
+        self, amount: float, *, pos: pygame.Vector2 | None = None
+    ) -> float:
+        if amount <= 0:
+            return 0.0
+        restored = min(
+            float(amount),
+            max(0.0, self.player_max_shield - self.player_shield),
+        )
+        if restored <= 0:
+            return 0.0
+        self.player_shield += restored
+        anchor = self.player_pos.copy() if pos is None else pos.copy()
+        self.floaters.append(
+            FloatingText(anchor, f"+{int(round(restored))} 护盾", config.SHIELD_COLOR, 0.6)
+        )
+        return restored
 
     def player_damage_taken_multiplier(self) -> float:
         multiplier = 1.0
@@ -938,8 +1202,8 @@ class Game:
             self.player_crit_chance = 0.05
             self.player_crit_multiplier = 1.55
         elif self.selected_weapon.key == "rail":
-            self.player_damage = 40.0
-            self.fire_cooldown = 0.52
+            self.player_damage = config.RAIL_BASE_DAMAGE
+            self.fire_cooldown = config.RAIL_FIRE_COOLDOWN
             self.player_spread = 0.006
             self.player_crit_chance = 0.24
             self.player_crit_multiplier = 2.30
@@ -1071,25 +1335,41 @@ class Game:
             or (upgrade_key == "credit_boost" and self.credit_gain_multiplier >= 2.0)
         )
 
-    def invalidate_navigation_fields(self) -> None:
+    def clear_navigation_fields(self) -> None:
         self.navigation_fields.clear()
 
+    def invalidate_navigation_fields(self) -> None:
+        room_state = self.current_room_state
+        if room_state is None:
+            self.clear_navigation_fields()
+            return
+        room_state.nav_version += 1
+        stale_keys = [
+            key for key in self.navigation_fields if key[0] == room_state.room_id
+        ]
+        for key in stale_keys:
+            self.navigation_fields.pop(key, None)
+
     def get_navigation_field(self, radius: int) -> NavigationField | None:
-        if self.room_layout is None:
+        if self.room_layout is None or self.current_room_state is None:
             return None
         radius_key = max(config.ENEMY_RADIUS, int(radius))
-        field = self.navigation_fields.get(radius_key)
+        room_state = self.current_room_state
+        cache_key = (room_state.room_id, room_state.nav_version, radius_key)
+        field = self.navigation_fields.get(cache_key)
         if field is None:
             field = NavigationField(
                 arena=self.arena_rect(),
-                obstacle_rects=tuple(
-                    obstacle.rect.copy() for obstacle in self.obstacles
-                ),
+                obstacle_rects=tuple(rect.copy() for rect in self.obstacle_rects()),
                 agent_radius=radius_key,
                 step=config.NAV_GRID_STEP,
                 padding=config.NAV_GRID_PADDING,
+                tight_gap_extra=config.NAV_TIGHT_GAP_EXTRA,
+                cross_gap_extra=config.NAV_CROSS_GAP_EXTRA,
+                distance_cache_limit=config.NAV_DISTANCE_CACHE_LIMIT,
+                waypoint_cache_limit=config.NAV_WAYPOINT_CACHE_LIMIT,
             )
-            self.navigation_fields[radius_key] = field
+            self.navigation_fields[cache_key] = field
         return field
 
     def build_floor(self) -> None:
@@ -1103,6 +1383,7 @@ class Game:
             for room_id, room_def in self.floor_map.rooms.items()
         }
         self.kunkun_chip_barrage_used = False
+        self.vanguard_shockwave_used = False
         self.reset_q_skill_hold_state()
         self.assign_floor_challenge_room()
         self.bullets.clear()
@@ -1110,7 +1391,7 @@ class Game:
         self.explosion_waves.clear()
         self.floaters.clear()
         self.gas_clouds.clear()
-        self.invalidate_navigation_fields()
+        self.clear_navigation_fields()
         self.enemy_pause_timer = 0.0
         self.floor_entry_enemy_grace_pending = True
         self.message = f"进入第 {self.floor_index} 层"
@@ -1121,6 +1402,9 @@ class Game:
     def room_supports_nuke_event(self, layout: RoomLayout) -> bool:
         return layout.grid_size == (1, 1) or layout.centerpiece == "ring"
 
+    def room_supports_turret_event(self, layout: RoomLayout) -> bool:
+        return layout.grid_size == (1, 1) or layout.centerpiece == "ring"
+
     def should_spawn_nuke_event(self, room_def: FloorRoom) -> bool:
         if room_def.room_type not in {"combat", "elite"}:
             return False
@@ -1128,6 +1412,13 @@ class Game:
             return False
         profile = nuke_event_profile(room_def.difficulty, self.floor_index)
         return self.rng.random() < profile.chance
+
+    def should_spawn_turret_event(self, room_def: FloorRoom) -> bool:
+        if room_def.room_type not in {"combat", "elite"}:
+            return False
+        if not self.room_supports_turret_event(room_def.layout):
+            return False
+        return self.rng.random() < config.ROOM_EVENT_TURRET_CHANCE
 
     def assign_floor_challenge_room(self) -> None:
         if (
@@ -1201,6 +1492,17 @@ class Game:
                 room_def.layout.obstacles.append(
                     self.build_nuke_obstacle(anchor, room_def.difficulty)
                 )
+        elif self.should_spawn_turret_event(room_def):
+            anchors = self.get_room_feature_points(
+                room_def.layout,
+                1,
+                collision_radius=config.BOSS_RADIUS + 20,
+            )
+            if anchors:
+                state.room_event = RoomEventState(
+                    key="elite_turret",
+                    anchor=anchors[0].copy(),
+                )
         return state
 
     def spawn_room(self) -> None:
@@ -1222,10 +1524,22 @@ class Game:
         self.laser_traces.clear()
         self.explosion_waves.clear()
         self.gas_clouds.clear()
-        self.invalidate_navigation_fields()
+        self.refresh_obstacle_state()
         self.room_clear_delay = 0.0
         self.room_transition_cooldown = 0.45
         self.room_index = room_state.difficulty
+        if room_state.room_type == "maze":
+            room_state.retreat_door = (
+                entry_from
+                if (
+                    entry_from
+                    and self.room_layout is not None
+                    and entry_from in self.room_layout.screen_doors
+                )
+                else None
+            )
+        else:
+            room_state.retreat_door = None
 
         arena = self.arena_rect()
         if (
@@ -1272,11 +1586,35 @@ class Game:
             self.floor_entry_enemy_grace_pending = False
         self.spawn_room_pickups(arena)
         self.populate_room_enemies(room_state, arena, spawn_min_distance)
+        self.spawn_room_event_enemy(room_state, arena, spawn_min_distance)
         room_label = self.room_display_label(room_state)
         if self.enemy_pause_timer > 0:
             self.message = f"第 {self.floor_index} 层 · {room_label}（缓冲）"
         else:
             self.message = f"第 {self.floor_index} 层 · {room_label}"
+
+    def spawn_room_event_enemy(
+        self, room_state: RoomState, arena: pygame.Rect, min_distance: float
+    ) -> None:
+        event_state = room_state.room_event
+        if (
+            event_state is None
+            or event_state.completed
+            or event_state.key != "elite_turret"
+            or event_state.anchor is None
+        ):
+            return
+        turret = self.make_theme_enemy(
+            arena,
+            "elite_turret",
+            min_distance=min_distance,
+        )
+        turret.pos = event_state.anchor.copy()
+        self.clamp_circle_to_arena(turret.pos, turret.radius)
+        self.push_circle_out_of_obstacles(turret.pos, turret.radius)
+        turret.navigation.force_repath = False
+        room_state.enemies.append(turret)
+        event_state.spawned = True
 
     def populate_room_enemies(self, room_state: RoomState, arena: pygame.Rect, min_distance: float = 180.0) -> None:
         room_state.enemies.clear()
@@ -1378,6 +1716,10 @@ class Game:
         self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
 
     def themed_enemy_kind(self, theme: str) -> str | None:
+        if theme == "开阔车间":
+            return "engineer"
+        if theme == "掩体工带":
+            return "turret"
         if theme == "废料堆场":
             return "toxic_bloater"
         if theme == "反应堆室":
@@ -1387,6 +1729,8 @@ class Game:
     def themed_enemy_count(self, room_state: RoomState) -> int:
         if self.themed_enemy_kind(room_state.layout.theme) is None:
             return 0
+        if room_state.layout.theme == "掩体工带":
+            return 2 if room_state.room_type == "elite" else 1
         if room_state.room_type == "elite":
             return 2
         if room_state.room_type == "boss":
@@ -1407,6 +1751,54 @@ class Game:
         base_speed = (config.ENEMY_SPEED + speed_bonus) * config.ENEMY_GLOBAL_SPEED_SCALE
         damage = config.ENEMY_TOUCH_DAMAGE * damage_scale
         xp_reward = 10 + self.room_index // 2 + max(0, self.floor_index - 1)
+        if kind == "engineer":
+            return Enemy(
+                pos=pos,
+                hp=42 * hp_scale,
+                max_hp=42 * hp_scale,
+                speed=base_speed * 0.92,
+                radius=config.ENEMY_RADIUS + 1,
+                damage=damage * 0.98,
+                xp_reward=xp_reward + 5,
+                color=config.ENGINEER_ENEMY_COLOR,
+                knockback_resist=1.04,
+                kind=kind,
+                shield_damage_multiplier=config.ENGINEER_SHIELD_DAMAGE_MULT,
+            )
+        if kind in {"turret", "elite_turret"}:
+            elite_turret = kind == "elite_turret"
+            hp = 46 * hp_scale
+            turret_damage = damage * 0.92
+            xp_bonus = 7
+            radius = config.ENEMY_RADIUS + 3
+            color = config.TURRET_ENEMY_COLOR
+            if elite_turret:
+                hp *= config.ROOM_EVENT_TURRET_ELITE_HP_MULT
+                turret_damage *= config.ROOM_EVENT_TURRET_ELITE_DAMAGE_MULT
+                xp_bonus += config.ROOM_EVENT_TURRET_ELITE_XP_BONUS
+                radius += config.ROOM_EVENT_TURRET_ELITE_RADIUS_BONUS
+                color = config.TURRET_ELITE_COLOR
+            cooldown = max(
+                0.9 if elite_turret else 1.18,
+                enemy_attack_cooldown("shooter", self.room_index, self.floor_index)
+                * (0.86 if elite_turret else 1.0),
+            )
+            return Enemy(
+                pos=pos,
+                hp=hp,
+                max_hp=hp,
+                speed=0.0,
+                radius=radius,
+                damage=turret_damage,
+                xp_reward=xp_reward + xp_bonus,
+                color=color,
+                knockback_resist=2.6 if elite_turret else 2.2,
+                kind="turret",
+                variant="elite_turret" if elite_turret else "turret",
+                shoot_cooldown=cooldown,
+                shoot_timer=self.rng.random() * cooldown,
+                immobile=True,
+            )
         if kind == "toxic_bloater":
             return Enemy(
                 pos=pos,
@@ -1442,7 +1834,7 @@ class Game:
             idx
             for idx, enemy in enumerate(room_state.enemies)
             if not enemy.is_boss
-            and enemy.kind not in {"elite", "toxic_bloater", "reactor_bomber"}
+            and enemy.kind not in {"elite", "turret", "engineer", "toxic_bloater", "reactor_bomber"}
         ]
         fallback = [
             idx
@@ -1532,10 +1924,7 @@ class Game:
             ]
         )
         for pos in candidates:
-            if not any(
-                self.circle_intersects_rect(pos, config.PLAYER_RADIUS, rect)
-                for rect in self.obstacle_rects()
-            ):
+            if not self.position_hits_obstacle(pos, config.PLAYER_RADIUS):
                 return pos
         return self.random_free_position(arena, config.PLAYER_RADIUS + 8)
 
@@ -1603,10 +1992,7 @@ class Game:
                     avoid=self.player_pos,
                     min_distance=min_distance,
                 )
-                if any(
-                    self.circle_intersects_rect(pos, radius, rect)
-                    for rect in self.obstacle_rects()
-                ):
+                if self.position_hits_obstacle(pos, radius):
                     continue
                 return pos
         for _ in range(40):
@@ -1616,17 +2002,11 @@ class Game:
             )
             if pos.distance_to(self.player_pos) < min_distance:
                 continue
-            if any(
-                self.circle_intersects_rect(pos, radius, rect)
-                for rect in self.obstacle_rects()
-            ):
+            if self.position_hits_obstacle(pos, radius):
                 continue
             return pos
         fallback = pygame.Vector2(arena.center)
-        if any(
-            self.circle_intersects_rect(fallback, radius, rect)
-            for rect in self.obstacle_rects()
-        ):
+        if self.position_hits_obstacle(fallback, radius):
             fallback = pygame.Vector2(arena.centerx, arena.centery + 140)
         return fallback
 
@@ -1786,17 +2166,148 @@ class Game:
                 break
         return points[:count]
 
+    def weighted_pick_unique(
+        self,
+        options: Sequence[ChoiceT],
+        count: int,
+        weight_fn: Callable[[ChoiceT], float],
+        category_fn: Callable[[ChoiceT], str] | None = None,
+    ) -> list[ChoiceT]:
+        remaining = list(options)
+        picks: list[ChoiceT] = []
+        seen_categories: set[str] = set()
+        while remaining and len(picks) < count:
+            weights: list[float] = []
+            for option in remaining:
+                weight = max(0.0, float(weight_fn(option)))
+                if category_fn is not None:
+                    category = category_fn(option)
+                    if category in seen_categories:
+                        weight *= 0.7
+                weights.append(weight)
+            total = sum(weights)
+            if total <= 0:
+                chosen = self.rng.choice(remaining)
+            else:
+                chosen = self.rng.choices(remaining, weights=weights, k=1)[0]
+            picks.append(chosen)
+            if category_fn is not None:
+                seen_categories.add(category_fn(chosen))
+            remaining.remove(chosen)
+        return picks
+
+    def upgrade_bucket(self, upgrade_key: str) -> str:
+        if upgrade_key in {"damage", "rapid", "crit_rate", "crit_damage"}:
+            return "offense"
+        if upgrade_key in {"accuracy", "pierce", "multishot", "ricochet"}:
+            return "weapon"
+        if upgrade_key in {"shotgun_range", "rocket_blast"}:
+            return "weapon_mode"
+        if upgrade_key in {"max_hp", "heal", "shield_core"}:
+            return "defense"
+        if upgrade_key in {"speed", "dash"}:
+            return "mobility"
+        if upgrade_key in {"pulse", "pulse_radius", "basketball_training", "what_can_i_say"}:
+            return "skill"
+        return "utility"
+
+    def upgrade_offer_weight(self, upgrade: Upgrade, *, shop_context: bool = False) -> float:
+        key = upgrade.key
+        hp_ratio = 0.0 if self.player_max_hp <= 0 else self.player_hp / self.player_max_hp
+        shield_ratio = (
+            0.0 if self.player_max_shield <= 0 else self.player_shield / self.player_max_shield
+        )
+        weight = 1.0
+        if key in {"damage", "rapid"}:
+            weight += 1.6
+        if key == "crit_rate":
+            weight += 1.5 if self.player_crit_chance < 0.2 else 0.7
+        elif key == "crit_damage":
+            weight += 1.4 if self.player_crit_chance >= 0.16 else 0.6
+        elif key == "accuracy":
+            weight += 1.7 if self.player_spread > 0.035 else 0.8
+        elif key == "multishot":
+            weight += 1.5 if self.multishot < self.multishot_cap() else 0.4
+        elif key == "pierce":
+            weight += 1.1 if self.weapon_mode != "laser" else 0.3
+        elif key == "ricochet":
+            weight += 1.0 if self.player_bullet_bounces < self.ricochet_cap() else 0.3
+        elif key in {"max_hp", "heal"}:
+            weight += 2.8 if hp_ratio < 0.55 else 0.5
+            if shop_context:
+                weight += 0.7
+        elif key == "shield_core":
+            weight += 1.8 if shield_ratio < 0.45 else 0.7
+        elif key in {"speed", "dash"}:
+            weight += 1.2 if self.player_speed < config.PLAYER_BASE_SPEED + 40 else 0.6
+        elif key == "magnet":
+            weight += 0.8 if self.pickup_radius < 96 else 0.25
+        elif key == "enemy_bullet_slow":
+            weight += 1.0 if self.floor_index >= 4 else 0.45
+        elif key == "credit_boost":
+            weight += 0.8 if self.floor_index <= 6 else 0.45
+        elif key == "shotgun_range":
+            weight += 2.5 if self.is_shotgun_weapon() else 0.1
+        elif key == "rocket_blast":
+            weight += 2.6 if self.is_rocket_weapon() else 0.1
+        elif key == "pulse":
+            weight += 2.0 if self.active_skill_key == "pulse" else 0.1
+        elif key == "pulse_radius":
+            weight += 1.7 if self.active_skill_key == "pulse" else 0.1
+        elif key == "basketball_training":
+            weight += 2.2 if self.active_skill_key == "basketball" else 0.1
+        elif key == "what_can_i_say":
+            weight += 2.2 if self.active_skill_key == "mamba_smash" else 0.1
+        if shop_context and key in {"damage", "rapid", "crit_rate", "crit_damage"}:
+            weight += 0.4
+        return weight
+
+    def shop_offer_weight(self, offer) -> float:
+        if offer.key == "repair":
+            hp_ratio = 0.0 if self.player_max_hp <= 0 else self.player_hp / self.player_max_hp
+            return 4.2 if hp_ratio < 0.55 and not self.player_healing_blocked() else 0.8
+        if offer.key == "shield_charge":
+            shield_ratio = (
+                0.0
+                if self.player_max_shield <= 0
+                else self.player_shield / self.player_max_shield
+            )
+            return 3.0 if shield_ratio < 0.45 else 0.9
+        return self.upgrade_offer_weight(
+            Upgrade(offer.key, offer.name, offer.description),
+            shop_context=True,
+        )
+
     def build_shop_offers(self, layout: RoomLayout, difficulty: int) -> list[ShopOffer]:
-        guaranteed_keys = ("repair", "shield_charge")
         template_by_key = {offer.key: offer for offer in SHOP_OFFER_POOL}
-        guaranteed = [template_by_key[key] for key in guaranteed_keys if key in template_by_key]
+        sustain_keys = ("repair", "shield_charge", "shield_core")
+        sustain_pool = [
+            template_by_key[key]
+            for key in sustain_keys
+            if key in template_by_key
+            and (key not in UPGRADE_KEYS or self.is_upgrade_available(key))
+        ]
+        sustain_pick = self.weighted_pick_unique(
+            sustain_pool,
+            1,
+            self.shop_offer_weight,
+            lambda offer: "sustain",
+        )
         pool = [
             offer
             for offer in SHOP_OFFER_POOL
-            if offer.key not in guaranteed_keys and (offer.key not in UPGRADE_KEYS or self.is_upgrade_available(offer.key))
+            if offer not in sustain_pick
+            and (offer.key not in UPGRADE_KEYS or self.is_upgrade_available(offer.key))
         ]
-        self.rng.shuffle(pool)
-        picks = [*guaranteed, *pool[:3]]
+        picks = [
+            *sustain_pick,
+            *self.weighted_pick_unique(
+                pool,
+                4,
+                self.shop_offer_weight,
+                lambda offer: self.upgrade_bucket(offer.key),
+            ),
+        ]
         positions = self.build_shop_offer_positions(layout, len(picks))
         return [
             ShopOffer(
@@ -1813,8 +2324,14 @@ class Game:
         filtered = [
             upgrade for upgrade in UPGRADES if self.is_upgrade_available(upgrade.key)
         ]
-        pool = filtered if len(filtered) >= count else filtered
-        return self.rng.sample(pool, count)
+        if len(filtered) <= count:
+            return list(filtered)
+        return self.weighted_pick_unique(
+            filtered,
+            count,
+            self.upgrade_offer_weight,
+            lambda upgrade: self.upgrade_bucket(upgrade.key),
+        )
 
     def make_enemy(self, arena: pygame.Rect, min_distance: float = 180.0) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
@@ -1927,7 +2444,7 @@ class Game:
         hp_scale, damage_scale, speed_bonus = enemy_scaling(
             self.room_index, self.floor_index
         )
-        max_hp = 300 * hp_scale
+        max_hp = 300 * hp_scale * boss_floor_hp_multiplier(self.floor_index)
         speed = (config.BOSS_SPEED + speed_bonus * 0.35) * config.ENEMY_GLOBAL_SPEED_SCALE
         damage = config.ENEMY_TOUCH_DAMAGE * 1.2 * damage_scale
         radius = config.BOSS_RADIUS
@@ -1967,6 +2484,9 @@ class Game:
             shoot_timer=shoot_timer,
             special_timer=special_timer,
             alt_special_timer=alt_special_timer,
+            summon_timer=config.CHALLENGE_BOSS_SUMMON_COOLDOWN * 0.6
+            if variant == "challenge"
+            else 0.0,
         )
 
     def give_xp(self, amount: int) -> None:
@@ -1984,34 +2504,64 @@ class Game:
     def apply_upgrade(self, upgrade: Upgrade) -> str:
         applied_name = upgrade.name
         if upgrade.key == "damage":
-            self.player_damage *= 1.12
+            self.player_damage *= config.DAMAGE_UPGRADE_MULTIPLIER
         elif upgrade.key == "rapid":
-            self.fire_cooldown = max(0.11, self.fire_cooldown * 0.94)
+            self.fire_cooldown = max(
+                0.11,
+                self.fire_cooldown * config.RAPID_UPGRADE_COOLDOWN_MULTIPLIER,
+            )
         elif upgrade.key == "accuracy":
             if self.weapon_mode == "laser":
-                self.player_damage *= 1.06
+                self.player_damage *= config.LASER_ACCURACY_DAMAGE_MULTIPLIER
                 self.player_beam_width = max(10, self.player_beam_width - 1)
-                applied_name = f"{upgrade.name}（转化为聚焦增益）"
+                applied_name = (
+                    f"{upgrade.name}（转化为聚焦增益 +"
+                    f"{int(round((config.LASER_ACCURACY_DAMAGE_MULTIPLIER - 1.0) * 100))}%）"
+                )
             else:
                 self.player_spread = max(0.004, self.player_spread * 0.82)
         elif upgrade.key == "crit_rate":
-            self.player_crit_chance = min(0.45, self.player_crit_chance + 0.06)
+            self.player_crit_chance = min(
+                0.45, self.player_crit_chance + config.CRIT_RATE_UPGRADE_STEP
+            )
         elif upgrade.key == "crit_damage":
-            self.player_crit_multiplier = min(2.85, self.player_crit_multiplier + 0.18)
+            self.player_crit_multiplier = min(
+                2.85, self.player_crit_multiplier + config.CRIT_DAMAGE_UPGRADE_STEP
+            )
         elif upgrade.key == "speed":
             self.player_speed += config.SPEED_UPGRADE_BONUS
         elif upgrade.key == "max_hp":
-            self.player_max_hp += 12
-            self.heal_player(12)
+            base_max_hp = self.player_max_hp
+            self.player_max_hp += self.scaled_ratio_amount(
+                base_max_hp,
+                config.MAX_HP_UPGRADE_MULTIPLIER - 1.0,
+            )
+            self.heal_player(
+                self.scaled_ratio_amount(base_max_hp, config.MAX_HP_UPGRADE_HEAL_RATIO)
+            )
         elif upgrade.key == "heal":
-            self.heal_player(22)
+            self.heal_player(
+                self.scaled_ratio_amount(self.player_max_hp, config.HEAL_UPGRADE_RATIO)
+            )
         elif upgrade.key == "shield_core":
-            self.player_max_shield += 10
-            self.player_shield = min(self.player_max_shield, self.player_shield + 14)
+            base_max_shield = self.player_max_shield
+            self.player_max_shield += self.scaled_ratio_amount(
+                base_max_shield,
+                config.SHIELD_CORE_UPGRADE_MULTIPLIER - 1.0,
+            )
+            self.restore_player_shield(
+                self.scaled_ratio_amount(
+                    base_max_shield,
+                    config.SHIELD_CORE_UPGRADE_RESTORE_RATIO,
+                )
+            )
         elif upgrade.key == "pierce":
             if self.weapon_mode == "laser":
-                self.player_damage += 2
-                applied_name = f"{upgrade.name}（转化为激光伤害 +2）"
+                self.player_damage += config.LASER_PIERCE_DAMAGE_BONUS
+                applied_name = (
+                    f"{upgrade.name}（转化为激光伤害 +"
+                    f"{int(config.LASER_PIERCE_DAMAGE_BONUS)}）"
+                )
             else:
                 self.bullet_pierce += 1
         elif upgrade.key == "multishot":
@@ -2021,8 +2571,11 @@ class Game:
             elif self.multishot < self.multishot_cap():
                 self.multishot += 1
             else:
-                self.player_damage += 2
-                applied_name = f"{upgrade.name}（转化为火力 +2）"
+                self.player_damage += config.MULTISHOT_FALLBACK_DAMAGE_BONUS
+                applied_name = (
+                    f"{upgrade.name}（转化为火力 +"
+                    f"{int(config.MULTISHOT_FALLBACK_DAMAGE_BONUS)}）"
+                )
         elif upgrade.key == "shotgun_range":
             if self.is_shotgun_weapon() and not self.shotgun_range_cap_reached():
                 self.shotgun_range_bonus += config.SHOTGUN_RANGE_STEP
@@ -2046,15 +2599,15 @@ class Game:
         elif upgrade.key == "basketball_training":
             if self.active_skill_key == "basketball" and not self.basketball_upgrade_cap_reached():
                 self.basketball_upgrade_level += 1
-                self.basketball_damage += config.BASKETBALL_UPGRADE_DAMAGE_STEP
-                self.basketball_speed_scale += config.BASKETBALL_UPGRADE_SPEED_STEP
+                self.basketball_radius += config.BASKETBALL_UPGRADE_RADIUS_STEP
+                self.basketball_speed_scale *= config.BASKETBALL_UPGRADE_SPEED_MULTIPLIER
             else:
                 applied_name = f"{upgrade.name}（当前技能不可用）"
         elif upgrade.key == "what_can_i_say":
             if self.active_skill_key == "mamba_smash" and not self.mamba_upgrade_cap_reached():
                 self.mamba_upgrade_level += 1
-                self.mamba_skill_damage += config.MAMBA_UPGRADE_DAMAGE_STEP
                 self.mamba_skill_stun_duration += config.MAMBA_UPGRADE_STUN_STEP
+                self.mamba_skill_half_angle += config.MAMBA_UPGRADE_HALF_ANGLE_STEP
             else:
                 applied_name = f"{upgrade.name}（当前技能不可用）"
         elif upgrade.key == "magnet":
@@ -2073,7 +2626,10 @@ class Game:
                 0.60, self.enemy_bullet_speed_multiplier * 0.88
             )
         elif upgrade.key == "credit_boost":
-            self.credit_gain_multiplier = min(2.0, self.credit_gain_multiplier + 0.25)
+            self.credit_gain_multiplier = min(
+                2.0,
+                self.credit_gain_multiplier + config.CREDIT_BOOST_UPGRADE_STEP,
+            )
         elif upgrade.key == "ricochet":
             if self.player_bullet_bounces < self.ricochet_cap():
                 self.player_bullet_bounces += 1
@@ -2238,6 +2794,7 @@ class Game:
         self.handle_destroyed_obstacle(obstacle, impact_pos)
         if self.current_room_state is not None:
             self.current_room_state.layout.obstacles = self.obstacles
+        self.refresh_obstacle_state()
         self.invalidate_navigation_fields()
         return True
 
@@ -2267,30 +2824,32 @@ class Game:
         *,
         source: RoomObstacle | None = None,
         affect_player: bool = True,
+        affect_enemies: bool = True,
         enemy_knockback: float = 0.0,
         wave_ttl: float = 0.42,
         player_attack: bool = False,
     ) -> None:
         self.spawn_explosion_wave(center, radius, color, ttl=wave_ttl)
-        for enemy in self.enemies[:]:
-            distance = enemy.pos.distance_to(center)
-            if distance > radius + enemy.radius:
-                continue
-            falloff = max(0.46, 1.0 - distance / max(1.0, radius + enemy.radius))
-            dealt = damage * falloff
-            enemy.hp -= dealt
-            if player_attack and enemy.hp > 0:
-                self.apply_player_attack_effects(enemy)
-            if enemy_knockback > 0:
-                push_dir = enemy.pos - center
-                if push_dir.length_squared() <= 0:
-                    push_dir = pygame.Vector2(self.rng.uniform(-1.0, 1.0), self.rng.uniform(-1.0, 1.0))
-                if push_dir.length_squared() > 0:
-                    push = push_dir.normalize() * (enemy_knockback * falloff / enemy.knockback_resist)
-                    self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
-            self.floaters.append(FloatingText(enemy.pos.copy(), str(int(dealt)), color, 0.35))
-            if enemy.hp <= 0:
-                self.kill_enemy(enemy)
+        if affect_enemies:
+            for enemy in self.enemies[:]:
+                distance = enemy.pos.distance_to(center)
+                if distance > radius + enemy.radius:
+                    continue
+                falloff = max(0.46, 1.0 - distance / max(1.0, radius + enemy.radius))
+                dealt = damage * falloff
+                enemy.hp -= dealt
+                if player_attack and enemy.hp > 0:
+                    self.apply_player_attack_effects(enemy)
+                if enemy_knockback > 0:
+                    push_dir = enemy.pos - center
+                    if push_dir.length_squared() <= 0:
+                        push_dir = pygame.Vector2(self.rng.uniform(-1.0, 1.0), self.rng.uniform(-1.0, 1.0))
+                    if push_dir.length_squared() > 0:
+                        push = push_dir.normalize() * (enemy_knockback * falloff / enemy.knockback_resist)
+                        self.apply_enemy_knockback(enemy, push)
+                self.floaters.append(FloatingText(enemy.pos.copy(), str(int(dealt)), color, 0.35))
+                if enemy.hp <= 0:
+                    self.kill_enemy(enemy)
 
         player_distance = self.player_pos.distance_to(center)
         if affect_player and player_distance <= radius + config.PLAYER_RADIUS and self.iframes <= 0:
@@ -2898,6 +3457,9 @@ class Game:
             if offer.sold:
                 self.message = f"{offer.name} 已售出"
                 return
+            if self.shop_purchase_limit_reached(room):
+                self.message = config.SHOP_PURCHASE_LIMIT_MESSAGE
+                return
             if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(offer.key):
                 self.message = f"{offer.name} 当前已达上限"
                 return
@@ -2907,6 +3469,8 @@ class Game:
             self.credits -= offer.cost
             offer.sold = True
             self.apply_shop_offer(offer)
+            if offer.sold:
+                room.shop_purchases += 1
             self.play_sound("ui_click")
             return
         if room.room_type == "treasure" and not room.chest_opened:
@@ -2933,6 +3497,20 @@ class Game:
                 return offer
         return None
 
+    def remaining_shop_purchases(self, room: RoomState | None = None) -> int:
+        current_room = self.current_room_state if room is None else room
+        if current_room is None or current_room.room_type != "shop":
+            return 0
+        return max(0, config.SHOP_PURCHASE_LIMIT - current_room.shop_purchases)
+
+    def shop_purchase_limit_reached(self, room: RoomState | None = None) -> bool:
+        current_room = self.current_room_state if room is None else room
+        return (
+            current_room is not None
+            and current_room.room_type == "shop"
+            and current_room.shop_purchases >= config.SHOP_PURCHASE_LIMIT
+        )
+
     def apply_shop_offer(self, offer: ShopOffer) -> None:
         if offer.key in UPGRADE_KEYS:
             if not self.is_upgrade_available(offer.key):
@@ -2952,12 +3530,7 @@ class Game:
                 return
             self.heal_player(40)
         elif offer.key == "shield_charge":
-            self.player_shield = min(self.player_max_shield, self.player_shield + 30)
-            self.floaters.append(
-                FloatingText(
-                    self.player_pos.copy(), "+30 护盾", config.SHIELD_COLOR, 0.8
-                )
-            )
+            self.restore_player_shield(30)
         self.message = f"已购买 {offer.name}"
 
     def resolve_current_room(self) -> None:
@@ -2965,6 +3538,8 @@ class Game:
         if room is None or room.resolved:
             return
         room.resolved = True
+        if room.room_event is not None:
+            room.room_event.completed = True
         room.doors_locked = False
         self.clear_room_bound_projectiles()
         self.room_clear_delay = 0.0
@@ -3053,11 +3628,16 @@ class Game:
             if offer is not None:
                 if offer.sold:
                     return f"{offer.name}（已售出）"
+                if self.shop_purchase_limit_reached(room):
+                    return config.SHOP_SOLD_OUT_LABEL
                 if offer.key in UPGRADE_KEYS and not self.is_upgrade_available(
                     offer.key
                 ):
                     return f"{offer.name}（已达上限）"
-                return f"E 购买 {offer.name}（{offer.cost}）"
+                return (
+                    f"E 购买 {offer.name}（{offer.cost}） · "
+                    f"剩余 {self.remaining_shop_purchases(room)} 次"
+                )
         elif room.room_type == "treasure" and not room.chest_opened:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 70:
                 return "E 开启宝箱"
@@ -3066,16 +3646,26 @@ class Game:
                 return "E 进入下层"
         return ""
 
+    def is_door_locked(self, room: RoomState, direction: str) -> bool:
+        if not room.doors_locked:
+            return False
+        return not (
+            room.room_type == "maze"
+            and not room.resolved
+            and room.retreat_door == direction
+        )
+
     def check_door_transition(self) -> None:
         room = self.current_room_state
         if (
             room is None
             or self.room_layout is None
             or self.room_transition_cooldown > 0
-            or room.doors_locked
         ):
             return
         for direction, door_rect in self.room_layout.screen_doors.items():
+            if self.is_door_locked(room, direction):
+                continue
             if not door_rect.collidepoint(self.player_pos.x, self.player_pos.y):
                 continue
             next_room_id = room.neighbors.get(direction)
@@ -3099,6 +3689,8 @@ class Game:
 
     def finish_floor_advance(self) -> None:
         self.floor_index = self.floor_transition_target
+        self.kunkun_chip_barrage_used = False
+        self.vanguard_shockwave_used = False
         self.message = f"进入第 {self.floor_index} 层"
         self.build_floor()
 
@@ -3196,10 +3788,12 @@ class Game:
         mouse_pos = pygame.Vector2(pygame.mouse.get_pos())
         pressed = pygame.mouse.get_pressed(num_buttons=3)[0]
         if self.skill_cast_key is None and pressed and self.fire_timer <= 0:
-            aim = mouse_pos - self.player_pos
+            aim = self.current_fire_direction(mouse_pos)
             if aim.length_squared() > 0:
-                self.spawn_burst(aim.normalize())
+                self.spawn_burst(aim)
                 self.fire_timer = self.fire_cooldown
+        elif not pygame.mouse.get_pressed(num_buttons=3)[2]:
+            self.auto_aim_target = pygame.Vector2()
 
     def try_dash(self) -> None:
         if self.dash_timer > 0 or self.player_actions_locked():
@@ -3232,10 +3826,7 @@ class Game:
     def update_skill_input_state(self, dt: float) -> None:
         if not self.q_skill_hold_active:
             return
-        if (
-            self.selected_character.key != "kunkun"
-            or self.active_skill_key != "basketball"
-        ):
+        if not self.can_begin_q_hold():
             self.reset_q_skill_hold_state()
             return
         self.q_skill_hold_timer += dt
@@ -3248,6 +3839,55 @@ class Game:
                 if self.last_move.length_squared() > 0
                 else pygame.Vector2(1, 0)
             )
+        return aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
+
+    def weapon_supports_auto_aim(self) -> bool:
+        return self.selected_weapon.key in {"rail", "rocket", "laser_lance"}
+
+    def find_auto_aim_enemy(self, cursor_pos: pygame.Vector2) -> Enemy | None:
+        if not self.weapon_supports_auto_aim() or not self.enemies:
+            return None
+        cursor_dir = cursor_pos - self.player_pos
+        best_enemy: Enemy | None = None
+        best_score = float("inf")
+        for enemy in self.enemies:
+            to_enemy = enemy.pos - self.player_pos
+            player_distance = to_enemy.length()
+            if player_distance <= 0 or player_distance > config.AUTO_AIM_PLAYER_RADIUS:
+                continue
+            if not self.has_line_of_sight(
+                self.player_pos, enemy.pos, max(5, self.player_projectile_radius)
+            ):
+                continue
+            cursor_distance = enemy.pos.distance_to(cursor_pos)
+            if cursor_distance > config.AUTO_AIM_CURSOR_RADIUS:
+                continue
+            angle_penalty = 0.0
+            if cursor_dir.length_squared() > 0:
+                angle = cursor_dir.angle_to(to_enemy)
+                if abs(math.radians(angle)) > config.AUTO_AIM_ANGLE:
+                    continue
+                angle_penalty = abs(angle) * 0.45
+            score = cursor_distance * 0.72 + player_distance * 0.28 + angle_penalty
+            if score < best_score:
+                best_score = score
+                best_enemy = enemy
+        return best_enemy
+
+    def current_fire_direction(
+        self, cursor_pos: pygame.Vector2 | None = None
+    ) -> pygame.Vector2:
+        mouse_pos = pygame.Vector2(pygame.mouse.get_pos()) if cursor_pos is None else cursor_pos
+        pressed = pygame.mouse.get_pressed(num_buttons=3)
+        auto_target = self.find_auto_aim_enemy(mouse_pos) if pressed[2] else None
+        if auto_target is not None:
+            self.auto_aim_target = auto_target.pos.copy()
+            aim = auto_target.pos - self.player_pos
+        else:
+            self.auto_aim_target = pygame.Vector2()
+            aim = mouse_pos - self.player_pos
+        if aim.length_squared() <= 0:
+            aim = self.last_move if self.last_move.length_squared() > 0 else pygame.Vector2(1, 0)
         return aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
 
     def clear_enemy_bullets_in_radius(
@@ -3303,20 +3943,19 @@ class Game:
         for enemy in self.enemies[:]:
             dist = enemy.pos.distance_to(self.player_pos)
             if dist <= self.pulse_radius + enemy.radius:
-                pushed += 1
                 knock = enemy.pos - self.player_pos
                 if knock.length_squared() <= 0:
                     knock = pygame.Vector2(
                         self.rng.uniform(-1.0, 1.0), self.rng.uniform(-1.0, 1.0)
                     )
                 if knock.length_squared() > 0:
-                    self.move_circle_with_collisions(
-                        enemy.pos,
-                        enemy.radius,
+                    if self.apply_enemy_knockback(
+                        enemy,
                         knock.normalize()
                         * self.pulse_push_force
                         / max(0.35, enemy.knockback_resist),
-                    )
+                    ):
+                        pushed += 1
         self.spawn_particles(
             self.player_pos.copy(),
             config.BULLET_SHOCK_COLOR,
@@ -3342,12 +3981,119 @@ class Game:
             )
         )
 
+    def full_screen_effect_radius(self) -> float:
+        arena = self.arena_rect()
+        return pygame.Vector2(arena.center).distance_to(pygame.Vector2(arena.topleft)) + 24
+
+    def enemy_knockback_taken_multiplier(self, enemy: Enemy) -> float:
+        if enemy.kind == "turret":
+            return 0.0
+        if enemy.is_boss:
+            return config.BOSS_KNOCKBACK_TAKEN_MULTIPLIER
+        return 1.0
+
+    def apply_enemy_knockback(self, enemy: Enemy, delta: pygame.Vector2) -> bool:
+        if delta.length_squared() <= 0:
+            return False
+        taken_multiplier = self.enemy_knockback_taken_multiplier(enemy)
+        if taken_multiplier <= 0:
+            return False
+        self.move_circle_with_collisions(
+            enemy.pos,
+            enemy.radius,
+            delta * taken_multiplier,
+        )
+        return True
+
+    def effective_enemy_stun_duration(self, enemy: Enemy, duration: float) -> float:
+        if duration <= 0:
+            return 0.0
+        if enemy.is_boss:
+            duration *= config.BOSS_STUN_TAKEN_MULTIPLIER
+        return duration
+
+    def apply_enemy_stun(self, enemy: Enemy, duration: float) -> float:
+        actual_duration = self.effective_enemy_stun_duration(enemy, duration)
+        if actual_duration <= 0:
+            return 0.0
+        enemy.stun_timer = max(enemy.stun_timer, actual_duration)
+        enemy.action_state = ""
+        enemy.action_timer = 0.0
+        enemy.aim_direction = pygame.Vector2()
+        enemy.navigation.last_desired_move = pygame.Vector2()
+        enemy.navigation.force_repath = True
+        enemy.navigation.repath_timer = 0.0
+        return actual_duration
+
+    def try_vanguard_shockwave(self) -> bool:
+        if not self.vanguard_shockwave_available():
+            return False
+        if self.skill_timer > 0 or self.player_actions_locked():
+            return False
+        if self.vanguard_shockwave_used:
+            self.message = "本层全屏震撼已释放"
+            return False
+        if self.credits < config.VANGUARD_SHOCKWAVE_COST:
+            self.message = f"晶片不足 {config.VANGUARD_SHOCKWAVE_COST}"
+            return False
+        self.credits -= config.VANGUARD_SHOCKWAVE_COST
+        self.vanguard_shockwave_used = True
+        self.skill_timer = self.active_skill_cooldown()
+        radius = self.full_screen_effect_radius()
+        cleared = self.clear_enemy_bullets_in_radius(self.player_pos, radius)
+        stunned = 0
+        for enemy in self.enemies[:]:
+            enemy.hp -= config.VANGUARD_SHOCKWAVE_DAMAGE
+            self.apply_enemy_stun(enemy, config.VANGUARD_SHOCKWAVE_STUN)
+            stunned += 1
+            self.floaters.append(
+                FloatingText(
+                    enemy.pos.copy(),
+                    str(int(config.VANGUARD_SHOCKWAVE_DAMAGE)),
+                    config.BULLET_SHOCK_COLOR,
+                    0.4,
+                )
+            )
+            if enemy.hp <= 0:
+                self.kill_enemy(enemy)
+        self.pulse_effect_total = max(self.pulse_effect_duration, 0.32)
+        self.pulse_effect_timer = self.pulse_effect_total
+        self.spawn_explosion_wave(
+            self.player_pos.copy(), radius * 0.82, config.BULLET_SHOCK_COLOR, ttl=0.34
+        )
+        self.spawn_particles(
+            self.player_pos.copy(),
+            config.BULLET_SHOCK_COLOR,
+            30,
+            1.28,
+            (2.2, 6.0),
+            (0.12, 0.32),
+        )
+        self.add_screen_shake(
+            config.VANGUARD_SHOCKWAVE_SHAKE,
+            config.VANGUARD_SHOCKWAVE_SHAKE_DURATION,
+        )
+        self.add_screen_flash(
+            config.VANGUARD_SHOCKWAVE_FLASH_DURATION,
+            config.BULLET_SHOCK_COLOR,
+            config.VANGUARD_SHOCKWAVE_FLASH,
+        )
+        self.floaters.append(
+            FloatingText(
+                self.player_pos.copy(),
+                f"全屏震撼 · 清弹 {cleared} · 震晕 {stunned}",
+                config.BULLET_SHOCK_COLOR,
+                0.9,
+            )
+        )
+        return True
+
     def spawn_basketball_projectile(self, direction: pygame.Vector2) -> None:
         if direction.length_squared() <= 0:
             return
         direction = direction.normalize()
         spawn_pos = self.player_pos.copy() + direction * (
-            config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2
+            config.PLAYER_RADIUS + self.basketball_radius + 2
         )
         self.spawn_projectile(
             spawn_pos,
@@ -3355,7 +4101,7 @@ class Game:
             self.basketball_damage * self.player_damage_multiplier(),
             speed=self.basketball_projectile_speed(),
             ttl=config.BASKETBALL_TTL,
-            radius=config.BASKETBALL_RADIUS,
+            radius=self.basketball_radius,
             pierce=0,
             bounces_left=-1,
             friendly=True,
@@ -3373,7 +4119,7 @@ class Game:
         direction = self.current_skill_aim_direction()
         self.skill_timer = self.active_skill_cooldown()
         spawn_pos = self.player_pos.copy() + direction.normalize() * (
-            config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2
+            config.PLAYER_RADIUS + self.basketball_radius + 2
         )
         self.spawn_basketball_projectile(direction)
         self.spawn_particles(
@@ -3537,13 +4283,13 @@ class Game:
             direction * config.MAMBA_SKILL_LUNGE_DISTANCE,
         )
         impact_center = self.player_pos.copy() + direction * (config.MAMBA_SKILL_RANGE * 0.62)
-        cone_cos = math.cos(config.MAMBA_SKILL_HALF_ANGLE)
+        cone_cos = math.cos(self.mamba_skill_half_angle)
         hits = 0
         obstacle_hits = self.damage_obstacles_in_cone(
             self.player_pos,
             direction,
             config.MAMBA_SKILL_RANGE,
-            config.MAMBA_SKILL_HALF_ANGLE + 0.10,
+            self.mamba_skill_half_angle + 0.10,
             self.mamba_skill_damage * 1.1,
             config.MAMBA_IMPACT_COLOR,
         )
@@ -3566,17 +4312,12 @@ class Game:
             push = push_dir.normalize() * (
                 config.MAMBA_SKILL_KNOCKBACK / max(0.55, enemy.knockback_resist)
             )
-            self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+            self.apply_enemy_knockback(enemy, push)
             stun_duration = self.mamba_skill_stun_duration / max(
                 1.0, enemy.knockback_resist * 0.92
             )
-            if enemy.is_boss:
-                stun_duration *= 0.45
-            enemy.stun_timer = max(enemy.stun_timer, stun_duration)
-            enemy.action_state = ""
-            enemy.action_timer = 0.0
-            enemy.aim_direction = pygame.Vector2()
-            enemy.shoot_timer = max(enemy.shoot_timer, min(0.28, stun_duration))
+            actual_stun = self.apply_enemy_stun(enemy, stun_duration)
+            enemy.shoot_timer = max(enemy.shoot_timer, min(0.28, actual_stun))
             self.floaters.append(
                 FloatingText(
                     enemy.pos.copy(),
@@ -3912,6 +4653,9 @@ class Game:
         trail_color: tuple[int, int, int] | None = None,
         trail_interval: float = 0.0,
         expires_on_room_clear: bool = False,
+        homing_strength: float = 0.0,
+        homing_radius: float = 0.0,
+        affect_enemies: bool = True,
     ) -> None:
         if direction.length_squared() <= 0:
             return
@@ -3939,6 +4683,9 @@ class Game:
                 trail_interval=trail_interval,
                 trail_timer=trail_interval,
                 expires_on_room_clear=expires_on_room_clear,
+                homing_strength=homing_strength,
+                homing_radius=homing_radius,
+                affect_enemies=affect_enemies,
             )
         )
 
@@ -4007,7 +4754,8 @@ class Game:
             affect_player=False,
             enemy_knockback=bullet.explosion_knockback,
             wave_ttl=0.34,
-            player_attack=True,
+            player_attack=bullet.friendly,
+            affect_enemies=bullet.affect_enemies,
         )
         self.add_screen_shake(config.ROCKET_SCREEN_SHAKE, config.ROCKET_SCREEN_SHAKE_DURATION)
 
@@ -4178,8 +4926,9 @@ class Game:
                     damaged_enemies.add(id(enemy))
                     if enemy.hp > 0:
                         self.apply_player_attack_effects(enemy)
-                    self.move_circle_with_collisions(
-                        enemy.pos, enemy.radius, push_dir * 16 / enemy.knockback_resist
+                    self.apply_enemy_knockback(
+                        enemy,
+                        push_dir * 16 / enemy.knockback_resist,
                     )
                     floater_color = config.CRIT_COLOR if crit else color
                     floater_text = (
@@ -4430,11 +5179,27 @@ class Game:
             bullet.radius,
         )
 
+    def update_homing_projectile(self, bullet: Bullet, dt: float) -> None:
+        if (
+            bullet.homing_strength <= 0
+            or bullet.homing_radius <= 0
+            or bullet.friendly
+            or bullet.velocity.length_squared() <= 0
+        ):
+            return
+        to_player = self.player_pos - bullet.pos
+        if to_player.length_squared() <= 0 or to_player.length() > bullet.homing_radius:
+            return
+        speed = bullet.velocity.length()
+        blend = min(1.0, bullet.homing_strength * dt)
+        bullet.velocity = bullet.velocity.lerp(to_player.normalize() * speed, blend)
+
     def update_bullets(self, dt: float) -> None:
         arena = self.arena_rect()
         remaining: list[Bullet] = []
         for bullet in self.bullets:
             previous_pos = bullet.pos.copy()
+            self.update_homing_projectile(bullet, dt)
             bullet.pos += bullet.velocity * dt
             bullet.ttl -= dt
             self.update_bullet_trail(bullet, dt)
@@ -4495,7 +5260,7 @@ class Game:
                         self.apply_player_attack_effects(enemy)
                     if bullet.velocity.length_squared() > 0 and bullet.knockback > 0:
                         push = bullet.velocity.normalize() * bullet.knockback / enemy.knockback_resist
-                        self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+                        self.apply_enemy_knockback(enemy, push)
                     color = config.CRIT_COLOR if bullet.crit else (255, 220, 180)
                     text = f"\u66b4\u51fb {int(bullet.damage)}" if bullet.crit else str(int(bullet.damage))
                     self.floaters.append(FloatingText(enemy.pos.copy(), text, color, 0.45))
@@ -4664,6 +5429,10 @@ class Game:
     def get_enemy_projectile_damage(self, enemy: Enemy) -> float:
         if enemy.kind == "shooter":
             return max(7.0, enemy.damage * 0.72)
+        if enemy.kind == "turret":
+            if enemy.variant == "elite_turret":
+                return max(16.0, enemy.damage * 1.08)
+            return max(10.0, enemy.damage * 0.84)
         if enemy.kind == "shotgunner":
             return max(5.0, enemy.damage * 0.48)
         if enemy.kind == "elite":
@@ -4676,6 +5445,22 @@ class Game:
         return enemy.kind == "laser" or (
             enemy.kind == "boss" and enemy.variant == "challenge"
         )
+
+    def challenge_boss_laser_lock_active(self, enemy: Enemy) -> bool:
+        if enemy.kind != "boss" or enemy.variant != "challenge":
+            return False
+        _, lock_window = self.get_enemy_laser_timing(enemy)
+        return (
+            enemy.aim_direction.length_squared() > 0
+            and enemy.shoot_timer <= lock_window
+        )
+
+    def should_advance_enemy_shoot_timer(self, enemy: Enemy) -> bool:
+        if enemy.shoot_cooldown <= 0:
+            return False
+        if enemy.kind == "boss" and enemy.variant == "challenge":
+            return not enemy.action_state and enemy.stun_timer <= 0
+        return True
 
     def get_enemy_laser_timing(self, enemy: Enemy) -> tuple[float, float]:
         telegraph_window = 0.95 if enemy.is_boss else 0.78
@@ -4697,6 +5482,95 @@ class Game:
             return 18
         return 16 if enemy.is_boss else 12
 
+    def boss_name(self, enemy: Enemy) -> str:
+        return "歼灭主宰" if enemy.variant == "challenge" else "钢铁领主"
+
+    def charger_dash_available(self) -> bool:
+        return self.floor_index >= config.CHARGER_TRUE_DASH_FLOOR
+
+    def current_boss_stomp_radius(self, enemy: Enemy) -> float:
+        radius = float(config.BOSS_STOMP_RADIUS)
+        if enemy.phase >= 2:
+            radius *= config.BOSS_PHASE_TWO_STOMP_RADIUS_MULT
+        return radius
+
+    def current_challenge_boss_dash_distance(self, enemy: Enemy) -> float:
+        distance = config.CHALLENGE_BOSS_DASH_SPEED * config.CHALLENGE_BOSS_DASH_DURATION
+        if enemy.phase >= 2:
+            distance *= config.CHALLENGE_BOSS_PHASE_TWO_DASH_RANGE_MULT
+        return distance
+
+    def activate_boss_phase_two(self, enemy: Enemy) -> None:
+        if enemy.kind != "boss" or enemy.phase >= 2:
+            return
+        if enemy.hp > enemy.max_hp * config.BOSS_PHASE_TWO_RATIO:
+            return
+        enemy.phase = 2
+        if enemy.variant == "challenge":
+            enemy.speed *= config.CHALLENGE_BOSS_PHASE_TWO_SPEED_MULT
+            enemy.summon_timer = min(enemy.summon_timer, 0.8)
+        else:
+            enemy.speed *= config.BOSS_PHASE_TWO_SPEED_MULT
+        enemy.action_state = ""
+        enemy.action_timer = 0.0
+        enemy.aim_direction = pygame.Vector2()
+        self.prepare_boss_navigation_recovery(enemy, aggressive=True)
+        self.floaters.append(
+            FloatingText(
+                enemy.pos.copy() + pygame.Vector2(0, -56),
+                "二阶段",
+                config.BOSS_BAR_PHASE,
+                0.95,
+            )
+        )
+
+    def start_charger_dash(self, enemy: Enemy, direction: pygame.Vector2) -> bool:
+        if (
+            enemy.kind != "charger"
+            or not self.charger_dash_available()
+            or enemy.special_timer > 0
+            or direction.length_squared() <= 0
+        ):
+            return False
+        enemy.action_state = "charge_dash"
+        enemy.action_timer = config.CHARGER_DASH_DURATION
+        enemy.special_timer = config.CHARGER_DASH_COOLDOWN
+        enemy.aim_direction = direction.normalize()
+        enemy.navigation.force_repath = True
+        enemy.navigation.repath_timer = 0.0
+        return True
+
+    def advance_charger_dash(self, enemy: Enemy, dt: float) -> bool:
+        if enemy.kind != "charger" or enemy.action_state != "charge_dash":
+            return False
+        enemy.action_timer = max(0.0, enemy.action_timer - dt)
+        direction = enemy.aim_direction
+        if direction.length_squared() <= 0:
+            direction = self.player_pos - enemy.pos
+        if direction.length_squared() > 0:
+            desired_delta = direction.normalize() * config.CHARGER_DASH_SPEED * dt
+            actual_move = self.move_circle_with_collisions(
+                enemy.pos, enemy.radius, desired_delta
+            )
+            if (
+                desired_delta.length_squared() > 0
+                and actual_move.length_squared()
+                <= desired_delta.length_squared() * config.ENEMY_BLOCKED_MOVE_RATIO
+            ):
+                enemy.action_timer = 0.0
+        if enemy.pos.distance_to(self.player_pos) <= enemy.radius + config.PLAYER_RADIUS + 4:
+            if self.iframes <= 0:
+                self.damage_player(enemy.damage * 1.05, (255, 130, 130), 0.4)
+            enemy.action_timer = 0.0
+        if enemy.action_timer > 0:
+            return True
+        enemy.action_state = ""
+        enemy.aim_direction = pygame.Vector2()
+        enemy.navigation.pending_unstuck = True
+        enemy.navigation.force_repath = True
+        enemy.navigation.repath_timer = 0.0
+        return True
+
     def start_enemy_action(
         self, enemy: Enemy, action_state: str, duration: float
     ) -> None:
@@ -4705,6 +5579,26 @@ class Game:
         delta = self.player_pos - enemy.pos
         if delta.length_squared() > 0:
             enemy.aim_direction = delta.normalize()
+
+    def prepare_boss_navigation_recovery(
+        self,
+        enemy: Enemy,
+        *,
+        aggressive: bool = False,
+    ) -> None:
+        nav = enemy.navigation
+        nav.force_repath = True
+        nav.repath_timer = 0.0
+        nav.commit_timer = 0.0
+        nav.blocked_timer = 0.0
+        nav.sample_origin = enemy.pos.copy()
+        nav.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+        if aggressive:
+            nav.pending_unstuck = True
+            nav.obstacle_mode_timer = max(
+                nav.obstacle_mode_timer, config.ENEMY_OBSTACLE_MODE_TIME
+            )
+            nav.unstuck_side *= -1
 
     def start_challenge_boss_dash(
         self, enemy: Enemy, direction: pygame.Vector2
@@ -4732,6 +5626,7 @@ class Game:
         enemy.action_state = ""
         enemy.action_timer = 0.0
         enemy.aim_direction = pygame.Vector2()
+        self.prepare_boss_navigation_recovery(enemy, aggressive=True)
 
     def advance_challenge_boss_dash(self, enemy: Enemy, dt: float) -> bool:
         enemy.action_timer = max(0.0, enemy.action_timer - dt)
@@ -4739,11 +5634,26 @@ class Game:
         if direction.length_squared() <= 0:
             direction = self.player_pos - enemy.pos
         if direction.length_squared() > 0:
-            self.move_circle_with_collisions(
+            desired_delta = (
+                direction.normalize()
+                * (
+                    self.current_challenge_boss_dash_distance(enemy)
+                    / max(0.01, config.CHALLENGE_BOSS_DASH_DURATION)
+                )
+                * dt
+            )
+            actual_move = self.move_circle_with_collisions(
                 enemy.pos,
                 enemy.radius,
-                direction.normalize() * config.CHALLENGE_BOSS_DASH_SPEED * dt,
+                desired_delta,
             )
+            if (
+                desired_delta.length_squared() > 0
+                and actual_move.length_squared()
+                <= desired_delta.length_squared() * config.ENEMY_BLOCKED_MOVE_RATIO
+            ):
+                self.finish_challenge_boss_dash(enemy)
+                return True
         if enemy.pos.distance_to(self.player_pos) <= enemy.radius + config.PLAYER_RADIUS + 4:
             if self.iframes <= 0:
                 self.damage_player(
@@ -4779,18 +5689,22 @@ class Game:
         if enemy.variant == "challenge" and enemy.action_state == "dash_charge":
             enemy.action_state = "dash"
             enemy.action_timer = config.CHALLENGE_BOSS_DASH_DURATION
+            self.prepare_boss_navigation_recovery(enemy)
             return True
         if enemy.action_state == "stomp":
             self.execute_boss_stomp(enemy)
         elif enemy.action_state == "nova":
             self.execute_boss_nova(enemy)
+        elif enemy.action_state == "summon":
+            self.execute_challenge_boss_summon(enemy)
         enemy.action_state = ""
         enemy.action_timer = 0.0
         enemy.aim_direction = pygame.Vector2()
+        self.prepare_boss_navigation_recovery(enemy)
         return True
 
     def execute_boss_stomp(self, enemy: Enemy) -> None:
-        radius = config.BOSS_STOMP_RADIUS
+        radius = self.current_boss_stomp_radius(enemy)
         damage = max(22.0, enemy.damage * config.BOSS_STOMP_DAMAGE_MULTIPLIER)
         self.spawn_explosion_wave(
             enemy.pos, radius, config.BULLET_SHOCK_COLOR, ttl=0.52
@@ -4875,6 +5789,84 @@ class Game:
             )
         )
 
+
+
+    def execute_challenge_boss_summon(self, enemy: Enemy) -> None:
+        if self.current_room_state is None:
+            return
+        active_minions = sum(
+            1
+            for candidate in self.enemies
+            if candidate is not enemy and not candidate.is_boss
+        )
+        summon_count = min(
+            config.CHALLENGE_BOSS_SUMMON_COUNT,
+            max(0, config.CHALLENGE_BOSS_SUMMON_CAP - active_minions),
+        )
+        if summon_count <= 0:
+            enemy.summon_timer = config.CHALLENGE_BOSS_SUMMON_COOLDOWN * 0.5
+            return
+        arena = self.arena_rect()
+        for idx in range(summon_count):
+            summon = self.make_enemy(
+                arena,
+                min_distance=max(80.0, enemy.radius * 1.5),
+            )
+            offset = pygame.Vector2(1, 0).rotate(idx * 40 - 20 * (summon_count - 1)) * (
+                enemy.radius + 36
+            )
+            summon.pos = enemy.pos + offset
+            self.clamp_circle_to_arena(summon.pos, summon.radius)
+            self.push_circle_out_of_obstacles(summon.pos, summon.radius)
+            summon.navigation.force_repath = True
+            summon.navigation.repath_timer = 0.0
+            self.enemies.append(summon)
+            self.floaters.append(
+                FloatingText(
+                    summon.pos.copy() + pygame.Vector2(0, -18),
+                    "??",
+                    config.CHALLENGE_ROOM_COLOR,
+                    0.55,
+                )
+            )
+        enemy.summon_timer = config.CHALLENGE_BOSS_SUMMON_COOLDOWN
+
+    def fire_phase_two_boss_rocket(
+        self, enemy: Enemy, direction: pygame.Vector2
+    ) -> bool:
+        if direction.length_squared() <= 0:
+            return False
+        fired = direction.normalize()
+        self.spawn_projectile(
+            enemy.pos + fired * (enemy.radius + 6),
+            fired,
+            max(16.0, enemy.damage * config.BOSS_PHASE_TWO_ROCKET_DAMAGE_MULT),
+            speed=config.BULLET_SPEED
+            * config.BOSS_PHASE_TWO_ROCKET_SPEED_SCALE
+            * self.enemy_bullet_speed_multiplier,
+            ttl=1.9,
+            radius=config.ROCKET_PROJECTILE_RADIUS,
+            friendly=False,
+            color=config.ROCKET_COLOR,
+            knockback=0.0,
+            style="rocket",
+            explosion_radius=config.BOSS_PHASE_TWO_ROCKET_RADIUS,
+            explosion_color=config.ROCKET_EXPLOSION_COLOR,
+            explosion_knockback=config.BOSS_PHASE_TWO_ROCKET_KNOCKBACK,
+            trail_color=config.ROCKET_SMOKE_COLOR,
+            trail_interval=config.ROCKET_TRAIL_INTERVAL,
+            affect_enemies=False,
+        )
+        self.floaters.append(
+            FloatingText(
+                enemy.pos.copy() + pygame.Vector2(0, -34),
+                "火箭弹",
+                config.ROCKET_EXPLOSION_COLOR,
+                0.45,
+            )
+        )
+        return True
+
     def start_elite_burst(self, enemy: Enemy, direction: pygame.Vector2) -> None:
         enemy.action_state = "elite_burst"
         enemy.action_timer = float(config.ELITE_BURST_SIZE)
@@ -4882,312 +5874,846 @@ class Game:
         if direction.length_squared() > 0:
             enemy.aim_direction = direction.normalize()
 
-    def update_enemies(self, dt: float) -> None:
-        for enemy in self.enemies[:]:
-            if self.update_enemy_statuses(enemy, dt):
-                continue
-            enemy.stun_timer = max(0.0, enemy.stun_timer - dt)
-            if enemy.shoot_cooldown > 0:
-                enemy.shoot_timer -= dt
-            enemy.special_timer = max(0.0, enemy.special_timer - dt)
-            enemy.alt_special_timer = max(0.0, enemy.alt_special_timer - dt)
-            if enemy.stun_timer > 0:
-                enemy.action_state = ""
-                enemy.action_timer = 0.0
-                enemy.aim_direction = pygame.Vector2()
-                continue
-            delta_to_player = self.player_pos - enemy.pos
-            has_los = self.has_line_of_sight(
-                enemy.pos, self.player_pos, max(6, enemy.radius // 2)
+    def advance_enemy_navigation_state(self, enemy: Enemy, dt: float) -> None:
+        nav = enemy.navigation
+        nav.commit_timer = max(0.0, nav.commit_timer - dt)
+        nav.repath_timer = max(0.0, nav.repath_timer - dt)
+        nav.los_timer = max(0.0, nav.los_timer - dt)
+        nav.obstacle_mode_timer = max(0.0, nav.obstacle_mode_timer - dt)
+        nav.sample_timer -= dt
+        if nav.sample_origin.length_squared() <= 0:
+            nav.sample_origin = enemy.pos.copy()
+            nav.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+            return
+        if nav.sample_timer > 0:
+            return
+
+        moved = enemy.pos.distance_to(nav.sample_origin)
+        threshold = max(
+            14.0,
+            enemy.speed
+            * config.ENEMY_STUCK_SAMPLE_WINDOW
+            * config.ENEMY_STUCK_PROGRESS_RATIO,
+        )
+        if (
+            nav.last_desired_move.length_squared()
+            > config.ENEMY_NAV_MIN_MOVE * config.ENEMY_NAV_MIN_MOVE
+            and moved < threshold
+        ):
+            nav.force_repath = True
+            nav.repath_timer = 0.0
+            nav.pending_unstuck = True
+            nav.obstacle_mode_timer = max(
+                nav.obstacle_mode_timer, config.ENEMY_OBSTACLE_MODE_TIME
             )
-            if self.update_boss_action(enemy, dt):
+            nav.obstacle_failures += 1
+            nav.unstuck_side *= -1
+        else:
+            nav.obstacle_failures = max(0, nav.obstacle_failures - 1)
+        nav.sample_origin = enemy.pos.copy()
+        nav.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+
+    def segment_rect_hit_distance_sq(
+        self,
+        start: pygame.Vector2,
+        end: pygame.Vector2,
+        rect: pygame.Rect,
+        padding: int = 0,
+    ) -> float | None:
+        target = rect.inflate(padding * 2, padding * 2)
+        clipped = target.clipline(
+            (round(start.x), round(start.y)),
+            (round(end.x), round(end.y)),
+        )
+        if not clipped:
+            return None
+        hit_a = pygame.Vector2(clipped[0])
+        hit_b = pygame.Vector2(clipped[1])
+        return min(
+            start.distance_squared_to(hit_a),
+            start.distance_squared_to(hit_b),
+        )
+
+    def find_line_of_sight_blocker(
+        self, start: pygame.Vector2, end: pygame.Vector2, radius: int = 4
+    ) -> RoomObstacle | None:
+        best_obstacle: RoomObstacle | None = None
+        best_distance = float("inf")
+        for obstacle in self.query_obstacles_in_segment(start, end, radius):
+            hit_distance = self.segment_rect_hit_distance_sq(
+                start, end, obstacle.rect, padding=radius
+            )
+            if hit_distance is None or hit_distance >= best_distance:
                 continue
-            nav_target, direct_engage = self.get_enemy_navigation_target(
+            best_distance = hit_distance
+            best_obstacle = obstacle
+        return best_obstacle
+
+    def should_use_obstacle_anchor(self, obstacle: RoomObstacle | None) -> bool:
+        if obstacle is None:
+            return False
+        if getattr(obstacle, "tag", "normal") != "wall":
+            return True
+        return obstacle.rect.width < 160 or obstacle.rect.height < 160
+
+    def choose_obstacle_anchor(
+        self,
+        enemy: Enemy,
+        obstacle: RoomObstacle | None,
+        goal: pygame.Vector2 | None = None,
+    ) -> pygame.Vector2 | None:
+        if obstacle is None:
+            return None
+        chase_goal = self.player_pos if goal is None else goal
+        offset = max(10.0, config.ENEMY_OBSTACLE_ANCHOR_OFFSET)
+        clearance = int(enemy.radius + offset)
+        expanded = obstacle.rect.inflate(clearance * 2, clearance * 2)
+        arena = self.arena_rect().inflate(-enemy.radius * 2, -enemy.radius * 2)
+        mid_x = max(expanded.left, min(chase_goal.x, expanded.right))
+        mid_y = max(expanded.top, min(chase_goal.y, expanded.bottom))
+        left_x = expanded.left - offset
+        right_x = expanded.right + offset
+        top_y = expanded.top - offset
+        bottom_y = expanded.bottom + offset
+        candidates = [
+            pygame.Vector2(left_x, top_y),
+            pygame.Vector2(right_x, top_y),
+            pygame.Vector2(left_x, bottom_y),
+            pygame.Vector2(right_x, bottom_y),
+            pygame.Vector2(left_x, mid_y),
+            pygame.Vector2(right_x, mid_y),
+            pygame.Vector2(mid_x, top_y),
+            pygame.Vector2(mid_x, bottom_y),
+        ]
+        axis_delta = chase_goal - enemy.pos
+        prefer_vertical = abs(axis_delta.x) >= abs(axis_delta.y)
+        best: pygame.Vector2 | None = None
+        best_score = float("inf")
+        los_radius = max(6, enemy.radius // 2)
+        for candidate in candidates:
+            if not arena.collidepoint(candidate.x, candidate.y):
+                continue
+            if self.position_hits_obstacle(candidate, enemy.radius):
+                continue
+            candidate_side_x = candidate.x - obstacle.rect.centerx
+            candidate_side_y = candidate.y - obstacle.rect.centery
+            enemy_side_x = enemy.pos.x - obstacle.rect.centerx
+            enemy_side_y = enemy.pos.y - obstacle.rect.centery
+            goal_side_x = chase_goal.x - obstacle.rect.centerx
+            goal_side_y = chase_goal.y - obstacle.rect.centery
+            side_sign = (
+                -1
+                if (
+                    candidate.y < obstacle.rect.centery
+                    if prefer_vertical
+                    else candidate.x < obstacle.rect.centerx
+                )
+                else 1
+            )
+            score = (
+                candidate.distance_squared_to(chase_goal)
+                + candidate.distance_squared_to(enemy.pos) * 0.35
+            )
+            if enemy_side_x * goal_side_x < 0 and candidate_side_x * goal_side_x <= 0:
+                score += 5200
+            if enemy_side_y * goal_side_y < 0 and candidate_side_y * goal_side_y <= 0:
+                score += 5200
+            if side_sign != enemy.navigation.unstuck_side:
+                score += 4500
+            if (
+                enemy.navigation.obstacle_anchor.length_squared() > 0
+                and candidate.distance_squared_to(enemy.navigation.obstacle_anchor)
+                < 28 * 28
+            ):
+                score -= 1200
+            candidate_blocker = self.find_line_of_sight_blocker(
+                enemy.pos, candidate, los_radius
+            )
+            if candidate_blocker is not None:
+                score += 16000
+                if candidate_blocker is not obstacle:
+                    score += 8000
+            if (
+                self.find_line_of_sight_blocker(candidate, chase_goal, los_radius)
+                is None
+            ):
+                score -= 18000
+            if score < best_score:
+                best = candidate.copy()
+                best_score = score
+        return best
+
+    def choose_route_anchor(
+        self,
+        enemy: Enemy,
+        blocker: RoomObstacle | None,
+        goal: pygame.Vector2,
+    ) -> pygame.Vector2 | None:
+        anchor = self.choose_obstacle_anchor(enemy, blocker, goal)
+        if anchor is None:
+            return None
+        enemy.navigation.obstacle_anchor = anchor.copy()
+        enemy.navigation.commit_timer = max(
+            enemy.navigation.commit_timer, config.ENEMY_NAV_COMMIT_TIME
+        )
+        return anchor
+
+    def build_enemy_unstuck_delta(
+        self, enemy: Enemy, nav_target: pygame.Vector2
+    ) -> pygame.Vector2:
+        nav = enemy.navigation
+        if not nav.pending_unstuck:
+            return pygame.Vector2()
+        nav.pending_unstuck = False
+        base = nav_target - enemy.pos
+        if base.length_squared() <= 0:
+            base = self.player_pos - enemy.pos
+        if base.length_squared() <= 0:
+            base = pygame.Vector2(1, 0)
+        base = base.normalize()
+        lateral = pygame.Vector2(-base.y, base.x)
+        lateral *= -1 if nav.unstuck_side < 0 else 1
+        candidates = (
+            lateral * config.ENEMY_UNSTUCK_SIDE_STEP
+            - base * config.ENEMY_UNSTUCK_BACKSTEP,
+            -lateral * config.ENEMY_UNSTUCK_SIDE_STEP * 0.82
+            - base * (config.ENEMY_UNSTUCK_BACKSTEP * 0.75),
+            -base * (config.ENEMY_UNSTUCK_BACKSTEP * 1.2),
+        )
+        best_delta = pygame.Vector2()
+        best_score = float("-inf")
+        for candidate in candidates:
+            trial = enemy.pos.copy()
+            moved = self.move_circle_with_collisions(trial, enemy.radius, candidate)
+            if moved.length_squared() <= 4:
+                continue
+            score = (
+                moved.length_squared()
+                - trial.distance_squared_to(nav_target) * 0.12
+                - abs(candidate.length() - moved.length()) * 8.0
+            )
+            if score > best_score:
+                best_score = score
+                best_delta = moved
+        nav.commit_timer = max(nav.commit_timer, config.ENEMY_UNSTUCK_COMMIT_TIME)
+        return best_delta
+
+    def update_enemy_block_state(
+        self,
+        enemy: Enemy,
+        desired_move: pygame.Vector2,
+        actual_move: pygame.Vector2,
+        plan: EnemyNavigationPlan,
+        dt: float,
+    ) -> None:
+        nav = enemy.navigation
+        nav.last_desired_move = desired_move.copy()
+        nav.last_actual_move = actual_move.copy()
+        if (
+            desired_move.length_squared()
+            <= config.ENEMY_NAV_MIN_MOVE * config.ENEMY_NAV_MIN_MOVE
+        ):
+            nav.blocked_timer = max(0.0, nav.blocked_timer - dt)
+            return
+
+        desired_length = desired_move.length()
+        actual_length = actual_move.length()
+        if actual_length <= desired_length * config.ENEMY_BLOCKED_MOVE_RATIO:
+            nav.blocked_timer += dt
+            if nav.blocked_timer >= config.ENEMY_BLOCKED_TIME:
+                nav.force_repath = True
+                nav.repath_timer = 0.0
+                nav.commit_timer = min(nav.commit_timer, config.ENEMY_NAV_COMMIT_TIME * 0.4)
+                nav.obstacle_mode_timer = max(
+                    nav.obstacle_mode_timer, config.ENEMY_OBSTACLE_MODE_TIME
+                )
+                nav.obstacle_failures += 1
+                if (
+                    nav.blocked_timer >= config.ENEMY_BLOCKED_TIME * 1.5
+                    or plan.mode == "anchor"
+                ):
+                    nav.pending_unstuck = True
+                    nav.unstuck_side *= -1
+            return
+
+        nav.blocked_timer = max(0.0, nav.blocked_timer - dt * 2.0)
+        if actual_length >= desired_length * 0.55:
+            nav.obstacle_failures = max(0, nav.obstacle_failures - 1)
+
+    def get_enemy_navigation_plan(self, enemy: Enemy) -> EnemyNavigationPlan:
+        nav = enemy.navigation
+        los_radius = max(6, enemy.radius // 2)
+        reached_target = (
+            nav.committed_target.length_squared() > 0
+            and enemy.pos.distance_squared_to(nav.committed_target)
+            <= config.ENEMY_TARGET_REACHED_RADIUS
+            * config.ENEMY_TARGET_REACHED_RADIUS
+        )
+        needs_refresh = nav.force_repath or nav.commit_timer <= 0 or reached_target
+        if nav.repath_timer <= 0 and (not nav.has_los or nav.route_mode != "direct"):
+            needs_refresh = True
+
+        blocker: RoomObstacle | None = None
+        if nav.los_timer <= 0 or needs_refresh:
+            blocker = self.find_line_of_sight_blocker(
+                enemy.pos, self.player_pos, los_radius
+            )
+            nav.has_los = blocker is None
+            nav.los_timer = config.ENEMY_NAV_LOS_INTERVAL
+
+        if not needs_refresh and nav.committed_target.length_squared() > 0:
+            return EnemyNavigationPlan(
+                target=nav.committed_target.copy(),
+                has_los=nav.has_los,
+                direct_engage=nav.route_mode == "direct" and nav.has_los,
+                mode=nav.route_mode,
+                blocker=blocker,
+            )
+
+        target = self.player_pos.copy()
+        mode = "direct"
+        direct_engage = nav.has_los
+        if blocker is None and not nav.has_los:
+            blocker = self.find_line_of_sight_blocker(
+                enemy.pos, self.player_pos, los_radius
+            )
+
+        if not nav.has_los:
+            route_target, direct_engage = self.get_enemy_navigation_target(
                 enemy.pos, enemy.radius
             )
-            delta_to_nav = nav_target - enemy.pos
-            move_delta = pygame.Vector2()
-            if delta_to_nav.length_squared() > 0:
-                nav_direction = delta_to_nav.normalize()
-                if enemy.kind == "shooter":
-                    engage = direct_engage or has_los
-                    if engage and delta_to_player.length_squared() > 0:
-                        player_direction = delta_to_player.normalize()
-                        distance = delta_to_player.length()
-                        if distance > 320:
-                            move_delta += player_direction * enemy.speed * dt
-                        elif distance < 240:
-                            move_delta -= player_direction * enemy.speed * 0.75 * dt
-                        move_delta += (
-                            pygame.Vector2(-player_direction.y, player_direction.x)
-                            * 18
-                            * dt
-                        )
-                        if enemy.shoot_timer <= 0:
-                            self.enemy_shoot(
-                                enemy,
-                                player_direction,
-                                self.get_enemy_projectile_damage(enemy),
-                                config.BULLET_ENEMY_COLOR,
-                            )
-                            enemy.shoot_timer = enemy.shoot_cooldown
-                    else:
-                        move_delta += nav_direction * enemy.speed * 0.9 * dt
-                elif enemy.kind == "laser":
-                    engage = direct_engage or has_los
-                    telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
-                    tracking = 0 < enemy.shoot_timer <= telegraph_window
-                    locked = 0 < enemy.shoot_timer <= lock_window
-                    if delta_to_player.length_squared() > 0 and tracking and not locked:
-                        enemy.aim_direction = delta_to_player.normalize()
-                    elif (
-                        enemy.aim_direction.length_squared() <= 0
-                        and delta_to_player.length_squared() > 0
-                    ):
-                        enemy.aim_direction = delta_to_player.normalize()
+            target = route_target
+            mode = "direct" if direct_engage else "field"
 
-                    if engage and delta_to_player.length_squared() > 0:
-                        player_direction = delta_to_player.normalize()
-                        distance = delta_to_player.length()
-                        if enemy.shoot_timer > telegraph_window:
-                            if distance > 340:
-                                move_delta += player_direction * enemy.speed * dt
-                            elif distance < 230:
-                                move_delta -= player_direction * enemy.speed * 0.85 * dt
-                            move_delta += (
-                                pygame.Vector2(-player_direction.y, player_direction.x)
-                                * 14
-                                * dt
-                            )
-                        elif not locked:
-                            if distance > 330:
-                                move_delta += player_direction * enemy.speed * 0.26 * dt
-                            elif distance < 210:
-                                move_delta -= player_direction * enemy.speed * 0.22 * dt
-                    else:
-                        move_delta += nav_direction * enemy.speed * 0.8 * dt
+            route_blocker = None
+            anchor: pygame.Vector2 | None = None
+            should_try_anchor = (
+                blocker is not None
+                and (nav.obstacle_mode_timer > 0 or nav.obstacle_failures > 0)
+            )
+            if should_try_anchor and target.distance_squared_to(self.player_pos) > 16:
+                route_blocker = self.find_line_of_sight_blocker(
+                    enemy.pos, target, los_radius
+                )
+            elif should_try_anchor:
+                route_blocker = blocker
 
-                    if (
-                        enemy.shoot_timer <= 0
-                        and enemy.aim_direction.length_squared() > 0
-                    ):
-                        self.fire_laser(
-                            enemy.pos.copy(),
-                            enemy.aim_direction,
-                            self.get_enemy_laser_damage(enemy),
-                            self.get_enemy_laser_width(enemy),
-                            config.ENEMY_LASER_COLOR,
-                            friendly=False,
-                            trace_ttl=0.18,
-                        )
-                        enemy.shoot_timer = enemy.shoot_cooldown
-                        enemy.aim_direction = pygame.Vector2()
-                elif enemy.kind == "shotgunner":
-                    engage = direct_engage or has_los
-                    if engage and delta_to_player.length_squared() > 0:
-                        player_direction = delta_to_player.normalize()
-                        distance = delta_to_player.length()
-                        if distance > 220:
-                            move_delta += player_direction * enemy.speed * 1.06 * dt
-                        elif distance < 112:
-                            move_delta -= player_direction * enemy.speed * 0.58 * dt
-                        move_delta += (
-                            pygame.Vector2(-player_direction.y, player_direction.x)
-                            * 12
-                            * dt
-                        )
-                        if enemy.shoot_timer <= 0 and distance <= 260:
-                            self.enemy_shoot(
-                                enemy,
-                                player_direction,
-                                self.get_enemy_projectile_damage(enemy),
-                                config.SHOTGUN_PELLET_COLOR,
-                                angles=[
-                                    -config.SHOTGUNNER_PELLET_SPREAD,
-                                    -0.16,
-                                    0.0,
-                                    0.16,
-                                    config.SHOTGUNNER_PELLET_SPREAD,
-                                ],
-                                speed_scale=config.SHOTGUNNER_PELLET_SPEED_SCALE,
-                                ttl=config.SHOTGUNNER_PELLET_TTL,
-                                radius=config.BULLET_RADIUS,
-                                decay_visual=True,
-                            )
-                            enemy.shoot_timer = enemy.shoot_cooldown
-                    else:
-                        move_delta += nav_direction * enemy.speed * 0.94 * dt
-                elif enemy.kind == "elite":
-                    engage = direct_engage or has_los
-                    if engage and delta_to_player.length_squared() > 0:
-                        player_direction = delta_to_player.normalize()
-                        distance = delta_to_player.length()
-                        enemy.aim_direction = player_direction
-                        lateral = pygame.Vector2(
-                            -player_direction.y, player_direction.x
-                        )
-                        if enemy.action_state == "elite_burst":
-                            move_delta += lateral * 20 * dt
-                            if distance > 280:
-                                move_delta += player_direction * enemy.speed * 0.16 * dt
-                            elif distance < 150:
-                                move_delta -= player_direction * enemy.speed * 0.24 * dt
-                            if enemy.alt_special_timer <= 0 and enemy.action_timer > 0:
-                                jittered = enemy.aim_direction.rotate_rad(
-                                    self.rng.uniform(-0.035, 0.035)
-                                )
-                                self.enemy_shoot(
-                                    enemy,
-                                    jittered,
-                                    self.get_enemy_projectile_damage(enemy),
-                                    config.BULLET_ELITE_COLOR,
-                                )
-                                enemy.action_timer -= 1
-                                enemy.alt_special_timer = config.ELITE_BURST_INTERVAL
-                            if enemy.action_timer <= 0:
-                                enemy.action_state = ""
-                                enemy.action_timer = 0.0
-                                enemy.shoot_timer = enemy.shoot_cooldown
-                        else:
-                            if distance > 270:
-                                move_delta += player_direction * enemy.speed * 1.04 * dt
-                            elif distance < 180:
-                                move_delta -= player_direction * enemy.speed * 0.18 * dt
-                            move_delta += lateral * 10 * dt
-                            if enemy.shoot_timer <= 0:
-                                self.start_elite_burst(enemy, player_direction)
-                    else:
-                        if enemy.action_state == "elite_burst":
-                            enemy.action_state = ""
-                            enemy.action_timer = 0.0
-                        move_delta += nav_direction * enemy.speed * 0.96 * dt
-                else:
-                    if enemy.kind == "boss" and delta_to_player.length_squared() > 0:
-                        distance = delta_to_player.length()
-                        if enemy.variant == "challenge":
-                            telegraph_window, lock_window = self.get_enemy_laser_timing(
-                                enemy
-                            )
-                            tracking = 0 < enemy.shoot_timer <= telegraph_window
-                            locked = 0 < enemy.shoot_timer <= lock_window
-                            if tracking and not locked:
-                                enemy.aim_direction = delta_to_player.normalize()
-                            elif enemy.aim_direction.length_squared() <= 0:
-                                enemy.aim_direction = delta_to_player.normalize()
-                            if (
-                                has_los
-                                and distance <= config.CHALLENGE_BOSS_DASH_TRIGGER_RANGE
-                                and enemy.alt_special_timer <= 0
-                            ):
-                                self.start_challenge_boss_dash(
-                                    enemy, delta_to_player.normalize()
-                                )
-                                continue
-                            if (
-                                has_los
-                                and config.BOSS_NOVA_MIN_RANGE
-                                <= distance
-                                <= config.BOSS_NOVA_MAX_RANGE
-                                and enemy.special_timer <= 0
-                            ):
-                                self.start_enemy_action(
-                                    enemy, "nova", config.BOSS_NOVA_TELEGRAPH
-                                )
-                                enemy.special_timer = config.BOSS_NOVA_COOLDOWN
-                                enemy.shoot_timer = max(
-                                    enemy.shoot_timer,
-                                    config.BOSS_NOVA_TELEGRAPH + 0.24,
-                                )
-                                continue
-                        else:
-                            if (
-                                has_los
-                                and distance <= config.BOSS_STOMP_TRIGGER_RANGE
-                                and enemy.special_timer <= 0
-                            ):
-                                self.start_enemy_action(
-                                    enemy, "stomp", config.BOSS_STOMP_TELEGRAPH
-                                )
-                                enemy.special_timer = config.BOSS_STOMP_COOLDOWN
-                                enemy.shoot_timer = max(
-                                    enemy.shoot_timer, config.BOSS_STOMP_TELEGRAPH + 0.18
-                                )
-                                continue
-                            if (
-                                has_los
-                                and config.BOSS_NOVA_MIN_RANGE
-                                <= distance
-                                <= config.BOSS_NOVA_MAX_RANGE
-                                and enemy.alt_special_timer <= 0
-                            ):
-                                self.start_enemy_action(
-                                    enemy, "nova", config.BOSS_NOVA_TELEGRAPH
-                                )
-                                enemy.alt_special_timer = config.BOSS_NOVA_COOLDOWN
-                                enemy.shoot_timer = max(
-                                    enemy.shoot_timer, config.BOSS_NOVA_TELEGRAPH + 0.24
-                                )
-                                continue
-                    speed_scale = 1.18 if enemy.kind == "charger" else 1.0
-                    pursue_direction = (
-                        delta_to_player.normalize()
-                        if direct_engage and delta_to_player.length_squared() > 0
-                        else nav_direction
+            if route_blocker is not None:
+                anchor = self.choose_route_anchor(enemy, route_blocker, self.player_pos)
+            if anchor is not None:
+                target = anchor
+                blocker = route_blocker
+                mode = "anchor"
+                direct_engage = False
+
+        nav.committed_target = target.copy()
+        nav.commit_timer = config.ENEMY_NAV_COMMIT_TIME
+        nav.repath_timer = (
+            0.0 if nav.force_repath else config.ENEMY_NAV_REPATH_INTERVAL
+        )
+        nav.force_repath = False
+        nav.route_mode = mode
+        return EnemyNavigationPlan(
+            target=target.copy(),
+            has_los=nav.has_los,
+            direct_engage=direct_engage,
+            mode=mode,
+            blocker=blocker,
+        )
+
+    def build_shooter_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        nav_direction: pygame.Vector2,
+        engage: bool,
+        dt: float,
+    ) -> pygame.Vector2:
+        move_delta = pygame.Vector2()
+        if engage and delta_to_player.length_squared() > 0:
+            player_direction = delta_to_player.normalize()
+            distance = delta_to_player.length()
+            if distance > 320:
+                move_delta += player_direction * enemy.speed * dt
+            elif distance < 240:
+                move_delta -= player_direction * enemy.speed * 0.75 * dt
+            move_delta += (
+                pygame.Vector2(-player_direction.y, player_direction.x) * 18 * dt
+            )
+            if enemy.shoot_timer <= 0:
+                self.enemy_shoot(
+                    enemy,
+                    player_direction,
+                    self.get_enemy_projectile_damage(enemy),
+                    config.BULLET_ENEMY_COLOR,
+                )
+                enemy.shoot_timer = enemy.shoot_cooldown
+            return move_delta
+        return nav_direction * enemy.speed * 0.9 * dt
+
+    def build_laser_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        nav_direction: pygame.Vector2,
+        engage: bool,
+        dt: float,
+    ) -> pygame.Vector2:
+        move_delta = pygame.Vector2()
+        telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
+        tracking = 0 < enemy.shoot_timer <= telegraph_window
+        locked = 0 < enemy.shoot_timer <= lock_window
+        if delta_to_player.length_squared() > 0 and tracking and not locked:
+            enemy.aim_direction = delta_to_player.normalize()
+        elif (
+            enemy.aim_direction.length_squared() <= 0
+            and delta_to_player.length_squared() > 0
+        ):
+            enemy.aim_direction = delta_to_player.normalize()
+
+        if engage and delta_to_player.length_squared() > 0:
+            player_direction = delta_to_player.normalize()
+            distance = delta_to_player.length()
+            if enemy.shoot_timer > telegraph_window:
+                if distance > 340:
+                    move_delta += player_direction * enemy.speed * dt
+                elif distance < 230:
+                    move_delta -= player_direction * enemy.speed * 0.85 * dt
+                move_delta += (
+                    pygame.Vector2(-player_direction.y, player_direction.x) * 14 * dt
+                )
+            elif not locked:
+                if distance > 330:
+                    move_delta += player_direction * enemy.speed * 0.26 * dt
+                elif distance < 210:
+                    move_delta -= player_direction * enemy.speed * 0.22 * dt
+        else:
+            move_delta += nav_direction * enemy.speed * 0.8 * dt
+
+        if enemy.shoot_timer <= 0 and enemy.aim_direction.length_squared() > 0:
+            self.fire_laser(
+                enemy.pos.copy(),
+                enemy.aim_direction,
+                self.get_enemy_laser_damage(enemy),
+                self.get_enemy_laser_width(enemy),
+                config.ENEMY_LASER_COLOR,
+                friendly=False,
+                trace_ttl=0.18,
+            )
+            enemy.shoot_timer = enemy.shoot_cooldown
+            enemy.aim_direction = pygame.Vector2()
+        return move_delta
+
+    def build_shotgunner_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        nav_direction: pygame.Vector2,
+        engage: bool,
+        dt: float,
+    ) -> pygame.Vector2:
+        move_delta = pygame.Vector2()
+        if engage and delta_to_player.length_squared() > 0:
+            player_direction = delta_to_player.normalize()
+            distance = delta_to_player.length()
+            if distance > 220:
+                move_delta += player_direction * enemy.speed * 1.06 * dt
+            elif distance < 112:
+                move_delta -= player_direction * enemy.speed * 0.58 * dt
+            move_delta += (
+                pygame.Vector2(-player_direction.y, player_direction.x) * 12 * dt
+            )
+            if enemy.shoot_timer <= 0 and distance <= 260:
+                self.enemy_shoot(
+                    enemy,
+                    player_direction,
+                    self.get_enemy_projectile_damage(enemy),
+                    config.SHOTGUN_PELLET_COLOR,
+                    angles=[
+                        -config.SHOTGUNNER_PELLET_SPREAD,
+                        -0.16,
+                        0.0,
+                        0.16,
+                        config.SHOTGUNNER_PELLET_SPREAD,
+                    ],
+                    speed_scale=config.SHOTGUNNER_PELLET_SPEED_SCALE,
+                    ttl=config.SHOTGUNNER_PELLET_TTL,
+                    radius=config.BULLET_RADIUS,
+                    decay_visual=True,
+                )
+                enemy.shoot_timer = enemy.shoot_cooldown
+            return move_delta
+        return nav_direction * enemy.speed * 0.94 * dt
+
+    def fire_turret_rocket(self, enemy: Enemy, direction: pygame.Vector2) -> bool:
+        if direction.length_squared() <= 0:
+            return False
+        fired = direction.normalize()
+        self.spawn_projectile(
+            enemy.pos + fired * (enemy.radius + 6),
+            fired,
+            self.get_enemy_projectile_damage(enemy) * config.TURRET_ROCKET_DAMAGE_MULT,
+            speed=config.BULLET_SPEED
+            * config.TURRET_ROCKET_SPEED_SCALE
+            * self.enemy_bullet_speed_multiplier,
+            ttl=1.8,
+            radius=config.ROCKET_PROJECTILE_RADIUS,
+            friendly=False,
+            color=config.ROCKET_COLOR,
+            knockback=0.0,
+            style="rocket",
+            explosion_radius=config.ROCKET_EXPLOSION_RADIUS * 0.72,
+            explosion_color=config.ROCKET_EXPLOSION_COLOR,
+            explosion_knockback=config.ROCKET_EXPLOSION_KNOCKBACK * 0.72,
+            trail_color=config.ROCKET_SMOKE_COLOR,
+            trail_interval=config.ROCKET_TRAIL_INTERVAL,
+            homing_strength=config.TURRET_ROCKET_HOMING_STRENGTH,
+            homing_radius=config.TURRET_ROCKET_HOMING_RADIUS,
+            affect_enemies=False,
+        )
+        return True
+
+    def build_turret_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        engage: bool,
+        dt: float,
+    ) -> pygame.Vector2:
+        _ = dt
+        move_delta = pygame.Vector2()
+        if delta_to_player.length_squared() <= 0:
+            return move_delta
+        desired = delta_to_player.normalize()
+        if enemy.aim_direction.length_squared() <= 0:
+            enemy.aim_direction = desired
+        else:
+            blend = min(1.0, config.TURRET_ROTATION_LERP * max(1 / config.FPS, dt))
+            enemy.aim_direction = enemy.aim_direction.lerp(desired, blend)
+        if not engage or enemy.shoot_timer > 0:
+            return move_delta
+        if enemy.variant == "elite_turret":
+            self.fire_turret_rocket(enemy, enemy.aim_direction)
+        else:
+            self.enemy_shoot(
+                enemy,
+                enemy.aim_direction,
+                self.get_enemy_projectile_damage(enemy),
+                config.BULLET_ENEMY_COLOR,
+                spread=0.08,
+            )
+        enemy.shoot_timer = enemy.shoot_cooldown
+        return move_delta
+
+    def build_elite_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        nav_direction: pygame.Vector2,
+        engage: bool,
+        dt: float,
+    ) -> pygame.Vector2:
+        move_delta = pygame.Vector2()
+        if engage and delta_to_player.length_squared() > 0:
+            player_direction = delta_to_player.normalize()
+            distance = delta_to_player.length()
+            enemy.aim_direction = player_direction
+            lateral = pygame.Vector2(-player_direction.y, player_direction.x)
+            if enemy.action_state == "elite_burst":
+                move_delta += lateral * 20 * dt
+                if distance > 280:
+                    move_delta += player_direction * enemy.speed * 0.16 * dt
+                elif distance < 150:
+                    move_delta -= player_direction * enemy.speed * 0.24 * dt
+                if enemy.alt_special_timer <= 0 and enemy.action_timer > 0:
+                    jittered = enemy.aim_direction.rotate_rad(
+                        self.rng.uniform(-0.035, 0.035)
                     )
-                    if (
-                        enemy.kind == "boss"
-                        and has_los
-                        and delta_to_player.length_squared() > 0
-                        and delta_to_player.length() < 150
-                    ):
-                        move_delta -= (
-                            delta_to_player.normalize() * enemy.speed * 0.12 * dt
-                        )
-                    move_delta += pursue_direction * enemy.speed * speed_scale * dt
-                    if (
-                        enemy.kind == "boss"
-                        and enemy.variant == "challenge"
-                        and enemy.shoot_timer <= 0
-                        and has_los
-                        and enemy.aim_direction.length_squared() > 0
-                    ):
-                        self.fire_laser(
-                            enemy.pos.copy(),
-                            enemy.aim_direction,
-                            self.get_enemy_laser_damage(enemy),
-                            self.get_enemy_laser_width(enemy),
-                            config.ENEMY_LASER_COLOR,
-                            friendly=False,
-                            trace_ttl=0.22,
-                        )
-                        enemy.shoot_timer = enemy.shoot_cooldown
-                        enemy.aim_direction = pygame.Vector2()
-                    elif (
-                        enemy.kind in ("elite", "boss")
-                        and enemy.shoot_timer <= 0
-                        and has_los
-                        and delta_to_player.length_squared() > 0
-                    ):
-                        self.enemy_shoot(
-                            enemy,
-                            delta_to_player.normalize(),
-                            self.get_enemy_projectile_damage(enemy),
-                            config.BULLET_ELITE_COLOR,
-                            spread=0.14 if enemy.kind == "boss" else 0.0,
-                        )
-                        enemy.shoot_timer = enemy.shoot_cooldown
-            if move_delta.length_squared() > 0:
-                avoid = self.get_enemy_avoidance(enemy)
-                if avoid.length_squared() > 0:
-                    move_delta += avoid.normalize() * enemy.speed * 0.42 * dt
-            self.move_enemy_with_navigation(enemy, move_delta, nav_target, dt)
-            if (
-                enemy.pos.distance_to(self.player_pos)
-                <= enemy.radius + config.PLAYER_RADIUS
-            ):
-                if self.iframes <= 0:
-                    self.damage_player(enemy.damage, (255, 130, 130), 0.45)
+                    self.enemy_shoot(
+                        enemy,
+                        jittered,
+                        self.get_enemy_projectile_damage(enemy),
+                        config.BULLET_ELITE_COLOR,
+                    )
+                    enemy.action_timer -= 1
+                    enemy.alt_special_timer = config.ELITE_BURST_INTERVAL
+                if enemy.action_timer <= 0:
+                    enemy.action_state = ""
+                    enemy.action_timer = 0.0
+                    enemy.shoot_timer = enemy.shoot_cooldown
+                return move_delta
 
+            if distance > 270:
+                move_delta += player_direction * enemy.speed * 1.04 * dt
+            elif distance < 180:
+                move_delta -= player_direction * enemy.speed * 0.18 * dt
+            move_delta += lateral * 10 * dt
+            if enemy.shoot_timer <= 0:
+                self.start_elite_burst(enemy, player_direction)
+            return move_delta
+
+        if enemy.action_state == "elite_burst":
+            enemy.action_state = ""
+            enemy.action_timer = 0.0
+        return nav_direction * enemy.speed * 0.96 * dt
+
+    def build_pursuit_move_delta(
+        self,
+        enemy: Enemy,
+        delta_to_player: pygame.Vector2,
+        nav_direction: pygame.Vector2,
+        plan: EnemyNavigationPlan,
+        dt: float,
+    ) -> tuple[pygame.Vector2, bool]:
+        move_delta = pygame.Vector2()
+        if (
+            enemy.kind == "charger"
+            and self.charger_dash_available()
+            and delta_to_player.length_squared() > 0
+            and delta_to_player.length() <= config.CHARGER_DASH_TRIGGER_RANGE
+            and self.start_charger_dash(enemy, delta_to_player.normalize())
+        ):
+            return move_delta, True
+        if enemy.kind == "boss" and delta_to_player.length_squared() > 0:
+            distance = delta_to_player.length()
+            if enemy.variant == "challenge":
+                telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
+                tracking = 0 < enemy.shoot_timer <= telegraph_window
+                locked = 0 < enemy.shoot_timer <= lock_window
+                if tracking and not locked:
+                    enemy.aim_direction = delta_to_player.normalize()
+                elif enemy.aim_direction.length_squared() <= 0:
+                    enemy.aim_direction = delta_to_player.normalize()
+                laser_lock_active = (
+                    plan.has_los and self.challenge_boss_laser_lock_active(enemy)
+                )
+                if (
+                    enemy.phase >= 2
+                    and enemy.summon_timer <= 0
+                    and enemy.action_state == ""
+                    and not laser_lock_active
+                ):
+                    self.start_enemy_action(
+                        enemy,
+                        "summon",
+                        config.CHALLENGE_BOSS_SUMMON_TELEGRAPH,
+                    )
+                    enemy.summon_timer = config.CHALLENGE_BOSS_SUMMON_COOLDOWN
+                    return move_delta, True
+                if (
+                    plan.has_los
+                    and distance
+                    <= (
+                        config.CHALLENGE_BOSS_DASH_TRIGGER_RANGE
+                        * (
+                            config.CHALLENGE_BOSS_PHASE_TWO_DASH_RANGE_MULT
+                            if enemy.phase >= 2
+                            else 1.0
+                        )
+                    )
+                    and enemy.alt_special_timer <= 0
+                    and not laser_lock_active
+                ):
+                    self.start_challenge_boss_dash(enemy, delta_to_player.normalize())
+                    return move_delta, True
+                if (
+                    plan.has_los
+                    and config.BOSS_NOVA_MIN_RANGE <= distance <= config.BOSS_NOVA_MAX_RANGE
+                    and enemy.special_timer <= 0
+                    and not laser_lock_active
+                ):
+                    self.start_enemy_action(enemy, "nova", config.BOSS_NOVA_TELEGRAPH)
+                    enemy.special_timer = config.BOSS_NOVA_COOLDOWN
+                    enemy.shoot_timer = max(
+                        enemy.shoot_timer,
+                        config.BOSS_NOVA_TELEGRAPH + 0.24,
+                    )
+                    return move_delta, True
+            else:
+                if (
+                    plan.has_los
+                    and distance <= config.BOSS_STOMP_TRIGGER_RANGE
+                    and enemy.special_timer <= 0
+                ):
+                    self.start_enemy_action(enemy, "stomp", config.BOSS_STOMP_TELEGRAPH)
+                    enemy.special_timer = config.BOSS_STOMP_COOLDOWN
+                    enemy.shoot_timer = max(
+                        enemy.shoot_timer, config.BOSS_STOMP_TELEGRAPH + 0.18
+                    )
+                    return move_delta, True
+                if (
+                    plan.has_los
+                    and config.BOSS_NOVA_MIN_RANGE <= distance <= config.BOSS_NOVA_MAX_RANGE
+                    and enemy.alt_special_timer <= 0
+                ):
+                    self.start_enemy_action(enemy, "nova", config.BOSS_NOVA_TELEGRAPH)
+                    enemy.alt_special_timer = config.BOSS_NOVA_COOLDOWN
+                    enemy.shoot_timer = max(
+                        enemy.shoot_timer,
+                        config.BOSS_NOVA_TELEGRAPH + 0.24,
+                    )
+                    return move_delta, True
+
+        speed_scale = 1.18 if enemy.kind == "charger" else 1.0
+        pursue_direction = (
+            delta_to_player.normalize()
+            if plan.direct_engage and delta_to_player.length_squared() > 0
+            else nav_direction
+        )
+        if (
+            enemy.kind == "boss"
+            and plan.has_los
+            and delta_to_player.length_squared() > 0
+            and delta_to_player.length() < 150
+        ):
+            move_delta -= delta_to_player.normalize() * enemy.speed * 0.12 * dt
+        move_delta += pursue_direction * enemy.speed * speed_scale * dt
+
+        if (
+            enemy.kind == "boss"
+            and enemy.variant == "challenge"
+            and enemy.shoot_timer <= 0
+            and plan.has_los
+            and enemy.aim_direction.length_squared() > 0
+        ):
+            self.fire_laser(
+                enemy.pos.copy(),
+                enemy.aim_direction,
+                self.get_enemy_laser_damage(enemy),
+                self.get_enemy_laser_width(enemy),
+                config.ENEMY_LASER_COLOR,
+                friendly=False,
+                trace_ttl=0.22,
+            )
+            enemy.shoot_timer = enemy.shoot_cooldown
+            enemy.aim_direction = pygame.Vector2()
+        elif (
+            enemy.kind == "boss"
+            and enemy.shoot_timer <= 0
+            and plan.has_los
+            and delta_to_player.length_squared() > 0
+        ):
+            fired_rocket = (
+                enemy.phase >= 2
+                and enemy.variant != "challenge"
+                and self.rng.random() < config.BOSS_PHASE_TWO_ROCKET_CHANCE
+                and self.fire_phase_two_boss_rocket(enemy, delta_to_player.normalize())
+            )
+            if not fired_rocket:
+                self.enemy_shoot(
+                    enemy,
+                    delta_to_player.normalize(),
+                    self.get_enemy_projectile_damage(enemy),
+                    config.BULLET_ELITE_COLOR,
+                    spread=0.14,
+                )
+            enemy.shoot_timer = enemy.shoot_cooldown
+        return move_delta, False
+
+    def build_enemy_move_delta(
+        self, enemy: Enemy, plan: EnemyNavigationPlan, dt: float
+    ) -> tuple[pygame.Vector2, bool]:
+        delta_to_player = self.player_pos - enemy.pos
+        delta_to_nav = plan.target - enemy.pos
+        if delta_to_nav.length_squared() <= 0:
+            return pygame.Vector2(), False
+        nav_direction = delta_to_nav.normalize()
+        engage = plan.direct_engage or plan.has_los
+        if enemy.kind == "shooter":
+            return (
+                self.build_shooter_move_delta(
+                    enemy, delta_to_player, nav_direction, engage, dt
+                ),
+                False,
+            )
+        if enemy.kind == "laser":
+            return (
+                self.build_laser_move_delta(
+                    enemy, delta_to_player, nav_direction, engage, dt
+                ),
+                False,
+            )
+        if enemy.kind == "shotgunner":
+            return (
+                self.build_shotgunner_move_delta(
+                    enemy, delta_to_player, nav_direction, engage, dt
+                ),
+                False,
+            )
+        if enemy.kind == "turret":
+            return (
+                self.build_turret_move_delta(enemy, delta_to_player, engage, dt),
+                False,
+            )
+        if enemy.kind == "elite":
+            return (
+                self.build_elite_move_delta(
+                    enemy, delta_to_player, nav_direction, engage, dt
+                ),
+                False,
+            )
+        return self.build_pursuit_move_delta(
+            enemy, delta_to_player, nav_direction, plan, dt
+        )
+
+    def update_enemy(self, enemy: Enemy, dt: float) -> None:
+        if self.update_enemy_statuses(enemy, dt):
+            return
+        enemy.stun_timer = max(0.0, enemy.stun_timer - dt)
+        if self.should_advance_enemy_shoot_timer(enemy):
+            enemy.shoot_timer -= dt
+        enemy.special_timer = max(0.0, enemy.special_timer - dt)
+        enemy.alt_special_timer = max(0.0, enemy.alt_special_timer - dt)
+        enemy.summon_timer = max(0.0, enemy.summon_timer - dt)
+        if enemy.stun_timer > 0:
+            enemy.action_state = ""
+            enemy.action_timer = 0.0
+            enemy.aim_direction = pygame.Vector2()
+            enemy.navigation.last_desired_move = pygame.Vector2()
+            enemy.navigation.sample_origin = enemy.pos.copy()
+            enemy.navigation.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+            return
+        if enemy.kind == "boss":
+            self.activate_boss_phase_two(enemy)
+        if self.advance_charger_dash(enemy, dt):
+            enemy.navigation.last_desired_move = pygame.Vector2()
+            enemy.navigation.sample_origin = enemy.pos.copy()
+            enemy.navigation.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+            return
+        if self.update_boss_action(enemy, dt):
+            enemy.navigation.last_desired_move = pygame.Vector2()
+            enemy.navigation.sample_origin = enemy.pos.copy()
+            enemy.navigation.sample_timer = config.ENEMY_STUCK_SAMPLE_WINDOW
+            return
+
+        self.advance_enemy_navigation_state(enemy, dt)
+        plan = self.get_enemy_navigation_plan(enemy)
+        move_delta, stop_update = self.build_enemy_move_delta(enemy, plan, dt)
+        if stop_update:
+            enemy.navigation.last_desired_move = pygame.Vector2()
+            return
+        if enemy.immobile:
+            enemy.navigation.last_desired_move = pygame.Vector2()
+            enemy.navigation.last_actual_move = pygame.Vector2()
+            return
+
+        move_delta = self.blend_enemy_steering(enemy, move_delta, plan.target)
+        move_delta += self.build_enemy_unstuck_delta(enemy, plan.target)
+        actual_move = self.move_enemy_with_navigation(enemy, move_delta, plan.target, dt)
+        self.update_enemy_block_state(enemy, move_delta, actual_move, plan, dt)
+        if enemy.pos.distance_to(self.player_pos) <= enemy.radius + config.PLAYER_RADIUS:
+            if self.iframes <= 0:
+                self.damage_player(
+                    enemy.damage,
+                    (255, 130, 130),
+                    0.45,
+                    shield_multiplier=enemy.shield_damage_multiplier,
+                )
+
+    def update_enemies(self, dt: float) -> None:
+        self.refresh_enemy_spatial_index()
+        for enemy in self.enemies[:]:
+            self.update_enemy(enemy, dt)
     def enemy_shoot(
         self,
         enemy: Enemy,
@@ -5291,17 +6817,7 @@ class Game:
         if pickup.kind == "heal":
             self.heal_player(pickup.amount)
         elif pickup.kind == "shield":
-            self.player_shield = min(
-                self.player_max_shield, self.player_shield + pickup.amount
-            )
-            self.floaters.append(
-                FloatingText(
-                    self.player_pos.copy(),
-                    f"+{pickup.amount} 护盾",
-                    config.SHIELD_COLOR,
-                    0.6,
-                )
-            )
+            self.restore_player_shield(pickup.amount)
         elif pickup.kind == "credit":
             before_tiers = self.kunkun_chip_bonus_tiers()
             gained = max(1, int(round(pickup.amount * self.credit_gain_multiplier)))
@@ -5578,6 +7094,12 @@ class Game:
                 self.draw_challenge_boss_avatar(enemy)
             elif enemy.kind == "boss":
                 self.draw_standard_boss_avatar(enemy)
+            elif enemy.kind == "elite":
+                self.draw_elite_avatar(enemy)
+            elif enemy.kind == "turret":
+                self.draw_turret_avatar(enemy)
+            elif enemy.kind == "engineer":
+                self.draw_engineer_avatar(enemy)
             elif enemy.kind == "shooter":
                 self.draw_shooter_avatar(enemy)
             else:
@@ -5586,20 +7108,21 @@ class Game:
                     enemy.pos, enemy.radius, enemy.kind, is_boss=enemy.is_boss
                 )
             hp_ratio = max(0.0, enemy.hp / enemy.max_hp)
-            width = enemy.radius * 2
-            top = enemy.pos.y - enemy.radius - 10
-            pygame.draw.rect(
-                self.screen,
-                (40, 30, 30),
-                (enemy.pos.x - enemy.radius, top, width, 5),
-                border_radius=3,
-            )
-            pygame.draw.rect(
-                self.screen,
-                (255, 100, 100),
-                (enemy.pos.x - enemy.radius, top, width * hp_ratio, 5),
-                border_radius=3,
-            )
+            if not enemy.is_boss:
+                width = enemy.radius * 2
+                top = enemy.pos.y - enemy.radius - 10
+                pygame.draw.rect(
+                    self.screen,
+                    (40, 30, 30),
+                    (enemy.pos.x - enemy.radius, top, width, 5),
+                    border_radius=3,
+                )
+                pygame.draw.rect(
+                    self.screen,
+                    (255, 100, 100),
+                    (enemy.pos.x - enemy.radius, top, width * hp_ratio, 5),
+                    border_radius=3,
+                )
             if enemy.stun_timer > 0:
                 self.draw_enemy_stun_marker(enemy)
             if self.enemy_has_status(enemy, "poison"):
@@ -5611,8 +7134,24 @@ class Game:
 
         self.draw_player_avatar()
         mouse = pygame.Vector2(pygame.mouse.get_pos())
-        aim = mouse - self.player_pos
+        aim = self.current_fire_direction(mouse)
         self.draw_player_weapon(aim)
+        if self.auto_aim_target.length_squared() > 0:
+            ring = 12 + int(2 * math.sin(pygame.time.get_ticks() * 0.012))
+            pygame.draw.circle(
+                self.screen,
+                config.CREDIT_COLOR,
+                self.auto_aim_target,
+                ring,
+                2,
+            )
+            pygame.draw.circle(
+                self.screen,
+                config.ROCKET_CORE_COLOR,
+                self.auto_aim_target,
+                max(4, ring // 3),
+                1,
+            )
 
         for particle in self.particles:
             pygame.draw.circle(
@@ -5623,6 +7162,7 @@ class Game:
             surf = self.small_font.render(floater.text, True, floater.color)
             self.screen.blit(surf, surf.get_rect(center=floater.pos))
 
+        self.draw_boss_status_bar()
         self.draw_hud()
         self.draw_overlay()
         if self.screen_shake_timer > 0 and self.screen_shake_strength > 0:
@@ -5986,85 +7526,214 @@ class Game:
         pygame.draw.rect(self.screen, outline, drum, border_radius=4)
         pygame.draw.rect(self.screen, (94, 76, 132), drum.inflate(-4, -4), border_radius=4)
 
+    def draw_engineer_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (28, 62, 56)
+        body = enemy.color
+        trim = (214, 250, 232)
+        accent = (255, 210, 122)
+        pygame.draw.circle(self.screen, outline, pos, radius + 2)
+        pygame.draw.circle(self.screen, body, pos, radius)
+        helmet = pygame.Rect(0, 0, int(radius * 1.5), int(radius * 0.8))
+        helmet.center = (int(pos.x), int(pos.y - radius * 0.18))
+        pygame.draw.rect(self.screen, trim, helmet, border_radius=7)
+        pygame.draw.rect(self.screen, outline, helmet, 2, border_radius=7)
+        visor = pygame.Rect(0, 0, int(radius * 0.92), int(radius * 0.22))
+        visor.center = helmet.center
+        pygame.draw.rect(self.screen, accent, visor, border_radius=4)
+        pygame.draw.rect(self.screen, outline, visor, 1, border_radius=4)
+        pack = pygame.Rect(0, 0, int(radius * 0.9), int(radius * 0.7))
+        pack.center = (int(pos.x), int(pos.y + radius * 0.40))
+        pygame.draw.rect(self.screen, outline, pack, border_radius=6)
+        pygame.draw.rect(self.screen, body, pack.inflate(-4, -4), border_radius=5)
+        for side in (-1, 1):
+            arm_start = pos + pygame.Vector2(side * radius * 0.36, radius * 0.12)
+            arm_end = arm_start + pygame.Vector2(side * radius * 0.48, radius * 0.18)
+            pygame.draw.line(self.screen, outline, arm_start, arm_end, 5)
+            pygame.draw.line(self.screen, trim, arm_start, arm_end, 3)
+        wrench_center = pos + pygame.Vector2(radius * 0.72, -radius * 0.10)
+        pygame.draw.circle(self.screen, accent, wrench_center, max(3, radius // 4), 2)
+        pygame.draw.line(
+            self.screen,
+            accent,
+            pos + pygame.Vector2(radius * 0.42, radius * 0.02),
+            wrench_center,
+            2,
+        )
+
+    def draw_turret_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (82, 56, 26)
+        body = enemy.color
+        trim = (
+            config.ROCKET_CORE_COLOR
+            if enemy.variant == "elite_turret"
+            else (246, 228, 180)
+        )
+        base_rect = pygame.Rect(0, 0, int(radius * 1.8), int(radius * 0.9))
+        base_rect.center = (int(pos.x), int(pos.y + radius * 0.42))
+        pygame.draw.ellipse(self.screen, outline, base_rect)
+        pygame.draw.ellipse(self.screen, body, base_rect.inflate(-4, -4))
+        core_rect = pygame.Rect(0, 0, int(radius * 1.36), int(radius * 1.10))
+        core_rect.center = (int(pos.x), int(pos.y - radius * 0.02))
+        pygame.draw.ellipse(self.screen, outline, core_rect)
+        pygame.draw.ellipse(self.screen, body, core_rect.inflate(-4, -4))
+        barrel_dir = (
+            enemy.aim_direction
+            if enemy.aim_direction.length_squared() > 0
+            else pygame.Vector2(1, 0)
+        ).normalize()
+        barrel_side = pygame.Vector2(-barrel_dir.y, barrel_dir.x) * max(
+            3, radius * 0.22
+        )
+        barrel_start = pos + barrel_dir * (radius * 0.10)
+        barrel_end = pos + barrel_dir * (
+            radius + (16 if enemy.variant == "elite_turret" else 12)
+        )
+        points = (
+            barrel_start + barrel_side,
+            barrel_start - barrel_side,
+            barrel_end - barrel_side * 0.72,
+            barrel_end + barrel_side * 0.72,
+        )
+        pygame.draw.polygon(self.screen, trim, points)
+        pygame.draw.polygon(self.screen, outline, points, 2)
+        lens = pos + barrel_dir * (radius * 0.28)
+        pygame.draw.circle(self.screen, trim, lens, max(4, radius // 3))
+        pygame.draw.circle(self.screen, outline, lens, max(4, radius // 3), 2)
+        if enemy.variant == "elite_turret":
+            ring_radius = radius + 7 + int(2 * math.sin(pygame.time.get_ticks() * 0.01))
+            pygame.draw.circle(self.screen, config.TURRET_ELITE_COLOR, pos, ring_radius, 2)
+
+    def draw_elite_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (96, 44, 20)
+        shell = (180, 96, 58)
+        trim = (255, 226, 152)
+        core = config.BULLET_ELITE_COLOR
+        pygame.draw.circle(self.screen, outline, pos, radius + 3)
+        pygame.draw.circle(self.screen, shell, pos, radius)
+        body = pygame.Rect(0, 0, int(radius * 1.58), int(radius * 1.28))
+        body.center = (int(pos.x), int(pos.y + radius * 0.04))
+        pygame.draw.ellipse(self.screen, shell, body)
+        pygame.draw.ellipse(self.screen, outline, body, 2)
+        for side in (-1, 1):
+            wing = (
+                (int(pos.x + side * radius * 0.26), int(pos.y - radius * 0.12)),
+                (int(pos.x + side * radius * 1.02), int(pos.y - radius * 0.58)),
+                (int(pos.x + side * radius * 0.72), int(pos.y + radius * 0.06)),
+            )
+            pygame.draw.polygon(self.screen, trim, wing)
+            pygame.draw.polygon(self.screen, outline, wing, 2)
+        core_rect = pygame.Rect(0, 0, int(radius * 0.72), int(radius * 0.84))
+        core_rect.center = (int(pos.x), int(pos.y + radius * 0.02))
+        pygame.draw.rect(self.screen, outline, core_rect, border_radius=8)
+        pygame.draw.rect(self.screen, core, core_rect.inflate(-4, -4), border_radius=7)
+        cannon_dir = (
+            enemy.aim_direction
+            if enemy.aim_direction.length_squared() > 0
+            else pygame.Vector2(1, 0)
+        ).normalize()
+        cannon_side = pygame.Vector2(-cannon_dir.y, cannon_dir.x)
+        for offset in (-radius * 0.24, radius * 0.24):
+            start = pos + cannon_side * offset
+            end = start + cannon_dir * (radius + 10)
+            pygame.draw.line(self.screen, trim, start, end, 4)
+            pygame.draw.line(self.screen, outline, start, end, 2)
+
     def draw_standard_boss_avatar(self, enemy: Enemy) -> None:
         pos = enemy.pos
         radius = enemy.radius
-        outline = (72, 20, 20)
-        shell = enemy.color
-        plate = (186, 86, 86)
-        glow = (255, 228, 182)
-        pygame.draw.circle(self.screen, outline, pos, radius + 4)
-        pygame.draw.circle(self.screen, shell, pos, radius)
+        outline = (54, 18, 18)
+        shell = (112, 34, 34)
+        armor = (170, 76, 76)
+        trim = (238, 198, 132)
+        glow = (255, 236, 184)
+        phase_glow = config.BOSS_BAR_PHASE if enemy.phase >= 2 else trim
 
-        crown = (
-            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.30)),
-            (int(pos.x - radius * 0.36), int(pos.y - radius * 0.96)),
-            (int(pos.x), int(pos.y - radius * 0.54)),
-            (int(pos.x + radius * 0.36), int(pos.y - radius * 0.96)),
-            (int(pos.x + radius * 0.78), int(pos.y - radius * 0.30)),
-        )
-        pygame.draw.polygon(self.screen, plate, crown)
-        pygame.draw.polygon(self.screen, outline, crown, 2)
+        pygame.draw.circle(self.screen, outline, pos, radius + 5)
+        pygame.draw.circle(self.screen, shell, pos, radius + 1)
 
-        left_guard = (
-            (int(pos.x - radius * 1.02), int(pos.y - radius * 0.08)),
-            (int(pos.x - radius * 0.48), int(pos.y - radius * 0.42)),
-            (int(pos.x - radius * 0.30), int(pos.y + radius * 0.24)),
-            (int(pos.x - radius * 0.80), int(pos.y + radius * 0.42)),
-        )
-        right_guard = (
-            (int(pos.x + radius * 1.02), int(pos.y - radius * 0.08)),
-            (int(pos.x + radius * 0.48), int(pos.y - radius * 0.42)),
-            (int(pos.x + radius * 0.30), int(pos.y + radius * 0.24)),
-            (int(pos.x + radius * 0.80), int(pos.y + radius * 0.42)),
-        )
-        pygame.draw.polygon(self.screen, plate, left_guard)
-        pygame.draw.polygon(self.screen, plate, right_guard)
-        pygame.draw.polygon(self.screen, outline, left_guard, 2)
-        pygame.draw.polygon(self.screen, outline, right_guard, 2)
+        chassis = pygame.Rect(0, 0, int(radius * 1.78), int(radius * 1.50))
+        chassis.center = (int(pos.x), int(pos.y + radius * 0.04))
+        pygame.draw.ellipse(self.screen, armor, chassis)
+        pygame.draw.ellipse(self.screen, outline, chassis, 3)
 
-        mask = pygame.Rect(0, 0, int(radius * 1.38), int(radius * 0.96))
-        mask.center = (int(pos.x), int(pos.y + radius * 0.02))
-        pygame.draw.ellipse(self.screen, plate, mask)
-        pygame.draw.ellipse(self.screen, outline, mask, 2)
-        for direction in (-1, 1):
-            eye = pygame.Rect(0, 0, int(radius * 0.40), int(radius * 0.20))
-            eye.center = (
-                int(pos.x + direction * radius * 0.34),
-                int(pos.y - radius * 0.10),
-            )
+        visor = pygame.Rect(0, 0, int(radius * 1.32), int(radius * 0.44))
+        visor.center = (int(pos.x), int(pos.y - radius * 0.14))
+        pygame.draw.ellipse(self.screen, outline, visor)
+        pygame.draw.ellipse(self.screen, (70, 20, 20), visor.inflate(-6, -6))
+        for side in (-1, 1):
+            eye = pygame.Rect(0, 0, int(radius * 0.42), int(radius * 0.16))
+            eye.center = (int(pos.x + side * radius * 0.34), int(pos.y - radius * 0.14))
             pygame.draw.line(
                 self.screen,
                 glow,
-                (eye.left, eye.centery + direction),
-                (eye.right, eye.centery - direction * 2),
+                (eye.left, eye.centery + side),
+                (eye.right, eye.centery - side * 2),
                 4,
             )
             pygame.draw.line(
                 self.screen,
                 outline,
-                (eye.left, eye.centery + direction),
-                (eye.right, eye.centery - direction * 2),
+                (eye.left, eye.centery + side),
+                (eye.right, eye.centery - side * 2),
                 2,
             )
 
-        core = pygame.Rect(0, 0, int(radius * 0.64), int(radius * 0.52))
-        core.center = (int(pos.x), int(pos.y + radius * 0.26))
+        core = pygame.Rect(0, 0, int(radius * 0.74), int(radius * 0.56))
+        core.center = (int(pos.x), int(pos.y + radius * 0.22))
         pygame.draw.ellipse(self.screen, outline, core)
-        pygame.draw.ellipse(self.screen, glow, core.inflate(-6, -6))
+        pygame.draw.ellipse(self.screen, phase_glow, core.inflate(-7, -6))
         pygame.draw.arc(
             self.screen,
             outline,
             pygame.Rect(
-                int(pos.x - radius * 0.34),
+                int(pos.x - radius * 0.40),
                 int(pos.y + radius * 0.18),
-                int(radius * 0.68),
-                max(10, int(radius * 0.32)),
+                int(radius * 0.80),
+                max(10, int(radius * 0.36)),
             ),
-            0.18,
-            math.pi - 0.18,
+            0.22,
+            math.pi - 0.22,
             3,
         )
+
+        horn_height = radius * (1.10 if enemy.phase >= 2 else 0.92)
+        for side in (-1, 1):
+            base = pygame.Vector2(pos.x + side * radius * 0.52, pos.y - radius * 0.42)
+            tip = pygame.Vector2(pos.x + side * radius * 0.94, pos.y - horn_height)
+            inner = pygame.Vector2(pos.x + side * radius * 0.24, pos.y - radius * 0.78)
+            pygame.draw.polygon(self.screen, armor, (base, tip, inner))
+            pygame.draw.polygon(self.screen, outline, (base, tip, inner), 2)
+
+        pauldrons = (
+            pygame.Rect(
+                int(pos.x - radius * 1.16),
+                int(pos.y - radius * 0.08),
+                int(radius * 0.62),
+                int(radius * 0.74),
+            ),
+            pygame.Rect(
+                int(pos.x + radius * 0.54),
+                int(pos.y - radius * 0.08),
+                int(radius * 0.62),
+                int(radius * 0.74),
+            ),
+        )
+        for panel in pauldrons:
+            pygame.draw.rect(self.screen, armor, panel, border_radius=8)
+            pygame.draw.rect(self.screen, outline, panel, 2, border_radius=8)
+            pygame.draw.line(
+                self.screen,
+                trim,
+                (panel.left + 6, panel.centery),
+                (panel.right - 6, panel.centery),
+                2,
+            )
 
     def draw_challenge_boss_avatar(self, enemy: Enemy) -> None:
         pos = enemy.pos
@@ -6436,9 +8105,9 @@ class Game:
     def draw_screen_doors(self) -> None:
         if self.room_layout is None or self.current_room_state is None:
             return
-        locked = self.current_room_state.doors_locked
         door_marks = {"north": "↑", "east": "→", "south": "↓", "west": "←"}
         for direction, rect in self.room_layout.screen_doors.items():
+            locked = self.is_door_locked(self.current_room_state, direction)
             fill = (155, 66, 66) if locked else config.DOOR_FILL
             glow = (210, 96, 96) if locked else config.DOOR_GLOW
             pygame.draw.rect(self.screen, glow, rect.inflate(14, 14), border_radius=12)
@@ -6456,7 +8125,9 @@ class Game:
                     life = 1.0 - enemy.action_timer / max(
                         0.01, config.BOSS_STOMP_TELEGRAPH
                     )
-                    radius = int(config.BOSS_STOMP_RADIUS * (0.82 + 0.18 * life))
+                    radius = int(
+                        self.current_boss_stomp_radius(enemy) * (0.82 + 0.18 * life)
+                    )
                     pygame.draw.circle(
                         self.screen, config.BULLET_SHOCK_COLOR, enemy.pos, radius, 3
                     )
@@ -6494,8 +8165,7 @@ class Game:
                     dash_length = max(
                         120,
                         int(
-                            config.CHALLENGE_BOSS_DASH_SPEED
-                            * config.CHALLENGE_BOSS_DASH_DURATION
+                            self.current_challenge_boss_dash_distance(enemy)
                             * 0.7
                         ),
                     )
@@ -6514,9 +8184,38 @@ class Game:
                         enemy.radius + 10,
                         3,
                     )
+                elif enemy.action_state == "summon":
+                    life = 1.0 - enemy.action_timer / max(
+                        0.01, config.CHALLENGE_BOSS_SUMMON_TELEGRAPH
+                    )
+                    radius = int(enemy.radius + 18 + 12 * life)
+                    pygame.draw.circle(
+                        self.screen,
+                        config.CHALLENGE_ROOM_COLOR,
+                        enemy.pos,
+                        radius,
+                        3,
+                    )
+                    for idx in range(config.CHALLENGE_BOSS_SUMMON_COUNT):
+                        angle = math.tau * idx / max(1, config.CHALLENGE_BOSS_SUMMON_COUNT) + life * 0.8
+                        marker = enemy.pos + pygame.Vector2(math.cos(angle), math.sin(angle)) * (radius + 12)
+                        pygame.draw.circle(
+                            self.screen,
+                            config.CHALLENGE_ROOM_COLOR,
+                            marker,
+                            8,
+                            2,
+                        )
             if (
-                not self.enemy_uses_laser_attack(enemy)
-                or enemy.aim_direction.length_squared() <= 0
+                (
+                    enemy.kind == "boss"
+                    and enemy.variant == "challenge"
+                    and enemy.action_state
+                )
+                or (
+                    not self.enemy_uses_laser_attack(enemy)
+                    or enemy.aim_direction.length_squared() <= 0
+                )
             ):
                 continue
             telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
@@ -6632,6 +8331,7 @@ class Game:
         if room is None:
             return
         if room.room_type == "shop":
+            shop_limit_reached = self.shop_purchase_limit_reached(room)
             for offer in room.shop_offers:
                 if offer.key == "repair":
                     accent = config.HEAL_COLOR
@@ -6649,8 +8349,10 @@ class Game:
                     accent = config.ROCKET_EXPLOSION_COLOR
                 else:
                     accent = config.CREDIT_COLOR
-                fill = (54, 59, 82) if not offer.sold else (44, 42, 48)
-                border = accent if not offer.sold else (112, 112, 118)
+                locked_by_limit = shop_limit_reached and not offer.sold
+                disabled = offer.sold or locked_by_limit
+                fill = (54, 59, 82) if not disabled else (44, 42, 48)
+                border = accent if not disabled else (112, 112, 118)
                 panel = pygame.Rect(0, 0, 160, 110)
                 panel.center = (offer.pos.x, offer.pos.y)
                 pygame.draw.rect(self.screen, fill, panel, border_radius=18)
@@ -6668,8 +8370,13 @@ class Game:
                     desc_surf = self.tiny_font.render(line, True, config.MUTED_TEXT)
                     self.screen.blit(desc_surf, desc_surf.get_rect(center=(panel.centerx, panel.top + 74 + idx * 13)))
 
-                footer_text = "已售出" if offer.sold else f"{offer.cost} 晶片"
-                footer_color = config.MUTED_TEXT if offer.sold else border
+                if offer.sold:
+                    footer_text = "已售出"
+                elif locked_by_limit:
+                    footer_text = "已售罄"
+                else:
+                    footer_text = f"{offer.cost} 晶片"
+                footer_color = config.MUTED_TEXT if disabled else border
                 footer_surf = self.small_font.render(footer_text, True, footer_color)
                 self.screen.blit(footer_surf, footer_surf.get_rect(center=(panel.centerx, panel.bottom - 15)))
         if room.room_event is not None and room.room_event.key == "nuke" and not room.room_event.completed:
@@ -6690,6 +8397,29 @@ class Game:
             self.screen.blit(
                 warning,
                 warning.get_rect(center=(center.x, center.y - 68)),
+            )
+        elif (
+            room.room_event is not None
+            and room.room_event.key == "elite_turret"
+            and not room.room_event.completed
+        ):
+            center = (
+                room.room_event.anchor.copy()
+                if room.room_event.anchor is not None
+                else pygame.Vector2(self.arena_rect().center)
+            )
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.009)
+            pygame.draw.circle(
+                self.screen,
+                config.TURRET_ELITE_COLOR,
+                center,
+                int(46 + pulse * 8),
+                2,
+            )
+            warning = self.small_font.render("炮塔核心", True, config.TURRET_ELITE_COLOR)
+            self.screen.blit(
+                warning,
+                warning.get_rect(center=(center.x, center.y - 58)),
             )
         elif room.room_type == "treasure" and not room.chest_opened:
             pos = self.get_room_feature_anchor(room)
@@ -6786,6 +8516,99 @@ class Game:
             chip_surf, chip_surf.get_rect(center=(rect.centerx + 3, rect.centery))
         )
 
+    def draw_cooldown_widget(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        timer: float,
+        cooldown: float,
+        accent: tuple[int, int, int],
+    ) -> None:
+        ready = timer <= 0
+        ratio = 1.0 if ready or cooldown <= 0 else 1.0 - timer / cooldown
+        ratio = max(0.0, min(1.0, ratio))
+        fill_color = config.HUD_COOLDOWN_READY if ready else accent
+        border = fill_color if ready else config.HUD_COOLDOWN_DIM
+        pygame.draw.rect(self.screen, (24, 28, 40), rect, border_radius=12)
+        inner = rect.inflate(-4, -4)
+        pygame.draw.rect(self.screen, (44, 49, 64), inner, border_radius=10)
+        if ratio > 0:
+            fill_rect = pygame.Rect(
+                inner.left,
+                inner.top,
+                max(10, int(inner.width * ratio)),
+                inner.height,
+            )
+            pygame.draw.rect(self.screen, fill_color, fill_rect, border_radius=10)
+        pygame.draw.rect(self.screen, border, rect, 2, border_radius=12)
+        label_surf = self.tiny_font.render(label, True, config.TEXT_COLOR)
+        value_text = "就绪" if ready else f"{timer:.1f}s"
+        value_surf = self.tiny_font.render(value_text, True, config.TEXT_COLOR)
+        self.screen.blit(label_surf, (rect.left + 8, rect.top + 4))
+        self.screen.blit(
+            value_surf,
+            (rect.right - value_surf.get_width() - 8, rect.top + 4),
+        )
+
+    def draw_skill_cooldowns(self) -> None:
+        panel = pygame.Rect(12, config.HEIGHT - 58, 196, 38)
+        self.draw_hud_panel(panel, border_color=config.CARD_HILITE)
+        gap = 6
+        widget_width = (panel.width - 16 - gap) // 2
+        dash_rect = pygame.Rect(panel.left + 5, panel.top + 6, widget_width, 24)
+        skill_rect = pygame.Rect(
+            dash_rect.right + gap,
+            panel.top + 6,
+            widget_width,
+            24,
+        )
+        self.draw_cooldown_widget(
+            dash_rect,
+            "冲刺",
+            self.dash_timer,
+            self.dash_cooldown,
+            config.PLAYER_COLOR,
+        )
+        self.draw_cooldown_widget(
+            skill_rect,
+            f"Q {self.active_skill_label}",
+            self.skill_timer,
+            self.active_skill_cooldown(),
+            config.XP_COLOR,
+        )
+
+    def draw_boss_status_bar(self) -> None:
+        boss = next((enemy for enemy in self.enemies if enemy.kind == "boss"), None)
+        if boss is None:
+            return
+        panel = pygame.Rect(config.WIDTH // 2 - 220, 14, 440, 42)
+        self.draw_hud_panel(panel, border_color=config.BOSS_BAR_BORDER)
+        ratio = max(0.0, boss.hp / max(1.0, boss.max_hp))
+        bar = pygame.Rect(panel.left + 12, panel.top + 18, panel.width - 24, 12)
+        pygame.draw.rect(self.screen, config.BOSS_BAR_BG, bar, border_radius=8)
+        fill = bar.inflate(-2, -2)
+        pygame.draw.rect(
+            self.screen,
+            config.BOSS_BAR_FILL,
+            (fill.left, fill.top, max(12, int(fill.width * ratio)), fill.height),
+            border_radius=7,
+        )
+        pygame.draw.rect(self.screen, config.BOSS_BAR_BORDER, bar, 2, border_radius=8)
+        name = f"{self.boss_name(boss)}  P{boss.phase}"
+        name_surf = self.small_font.render(name, True, config.TEXT_COLOR)
+        hp_surf = self.tiny_font.render(
+            f"{int(max(0.0, boss.hp))}/{int(boss.max_hp)}",
+            True,
+            config.TEXT_COLOR,
+        )
+        self.screen.blit(name_surf, (panel.left + 12, panel.top + 2))
+        self.screen.blit(hp_surf, (panel.right - hp_surf.get_width() - 12, panel.top + 4))
+        for idx in range(2):
+            center = (panel.centerx - 16 + idx * 32, panel.bottom - 7)
+            color = config.BOSS_BAR_PHASE if idx < boss.phase else config.HUD_COOLDOWN_DIM
+            pygame.draw.circle(self.screen, color, center, 5)
+            pygame.draw.circle(self.screen, (24, 18, 18), center, 7, 1)
+
     def draw_hud(self) -> None:
         hp_ratio = self.player_hp / self.player_max_hp
         shield_ratio = (
@@ -6865,15 +8688,12 @@ class Game:
         detail_line = self.fit_text_line(detail_text, self.tiny_font, detail_panel.width - 20)
         self.screen.blit(self.tiny_font.render(detail_line, True, config.MUTED_TEXT), (detail_panel.left + 10, detail_panel.top + 25))
 
-        dash_text = "\u5c31\u7eea" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
-        skill_text = self.active_skill_status_text()
         buff_text = self.active_player_buff_status_text()
-        skill_base = f"\u51b2\u523a {dash_text} \u00b7 Q {self.active_skill_label} {skill_text}"
+        self.draw_skill_cooldowns()
         if buff_text:
-            skill_base = f"{skill_base} \u00b7 {buff_text}"
-        skill_line = self.fit_text_line(skill_base, self.tiny_font, 210)
-        skills = self.tiny_font.render(skill_line, True, config.MUTED_TEXT)
-        self.screen.blit(skills, (12, config.HEIGHT - 26))
+            buff_line = self.fit_text_line(buff_text, self.tiny_font, 220)
+            skills = self.tiny_font.render(buff_line, True, config.MUTED_TEXT)
+            self.screen.blit(skills, (16, config.HEIGHT - 18))
         prompt = self.current_interaction_prompt()
         if prompt:
             prompt_surf = self.font.render(prompt, True, config.PLAYER_HIT_COLOR)
@@ -7407,7 +9227,12 @@ class Game:
         return True
 
     def damage_player(
-        self, amount: float, color: tuple[int, int, int], iframe_duration: float
+        self,
+        amount: float,
+        color: tuple[int, int, int],
+        iframe_duration: float,
+        *,
+        shield_multiplier: float = 1.0,
     ) -> None:
         if amount <= 0:
             return
@@ -7417,9 +9242,10 @@ class Game:
         self.iframes = max(self.iframes, iframe_duration)
         remaining = amount * damage_multiplier
         if self.player_shield > 0:
-            absorbed = min(self.player_shield, remaining)
+            shield_load = remaining * max(1.0, shield_multiplier)
+            absorbed = min(self.player_shield, shield_load)
             self.player_shield -= absorbed
-            remaining -= absorbed
+            remaining = max(0.0, remaining - absorbed / max(1.0, shield_multiplier))
             self.floaters.append(
                 FloatingText(
                     self.player_pos.copy() + pygame.Vector2(0, -20),
@@ -7475,19 +9301,7 @@ class Game:
     def has_line_of_sight(
         self, start: pygame.Vector2, end: pygame.Vector2, radius: int = 4
     ) -> bool:
-        delta = end - start
-        distance = delta.length()
-        if distance <= 0:
-            return True
-        steps = max(1, int(distance / 12))
-        for step in range(1, steps + 1):
-            sample = start.lerp(end, step / steps)
-            if any(
-                self.circle_intersects_rect(sample, radius, rect)
-                for rect in self.obstacle_rects()
-            ):
-                return False
-        return True
+        return self.find_line_of_sight_blocker(start, end, radius) is None
 
     def move_circle_with_collisions(
         self, pos: pygame.Vector2, radius: int, delta: pygame.Vector2

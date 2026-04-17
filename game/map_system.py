@@ -513,7 +513,7 @@ def build_maze_room_layout(
             opening_top = bounds.top + row * tile
             openings[direction] = (opening_top, opening_top + tile)
 
-    obstacles = _maze_wall_obstacles(bounds, grid, tile)
+    obstacles = _maze_wall_obstacles(bounds, grid, tile, room_index, rng)
     obstacles.extend(_maze_margin_walls(arena, bounds, openings))
     chamber_rect = bounds.inflate(-16, -16)
     chamber = Chamber(
@@ -655,26 +655,101 @@ def _maze_cell_center(
     )
 
 
+def _maze_wall_neighbors(
+    grid: list[list[int]], row: int, col: int
+) -> tuple[bool, bool, bool, bool]:
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+    left = col > 0 and grid[row][col - 1] == 1
+    right = col + 1 < cols and grid[row][col + 1] == 1
+    up = row > 0 and grid[row - 1][col] == 1
+    down = row + 1 < rows and grid[row + 1][col] == 1
+    return left, right, up, down
+
+
+def _maze_wall_rects(
+    bounds: pygame.Rect,
+    row: int,
+    col: int,
+    tile: int,
+    thickness: int,
+    *,
+    horizontal: bool,
+    vertical: bool,
+) -> list[pygame.Rect]:
+    left = bounds.left + col * tile
+    top = bounds.top + row * tile
+    inset_x = max(0, (tile - thickness) // 2)
+    inset_y = max(0, (tile - thickness) // 2)
+    pieces: list[pygame.Rect] = []
+    if horizontal:
+        pieces.append(pygame.Rect(left, top + inset_y, tile, thickness))
+    if vertical:
+        pieces.append(pygame.Rect(left + inset_x, top, thickness, tile))
+    if not pieces:
+        pieces.append(
+            pygame.Rect(left + inset_x, top + inset_y, thickness, thickness)
+        )
+    return pieces
+
+
 def _maze_wall_obstacles(
-    bounds: pygame.Rect, grid: list[list[int]], tile: int
+    bounds: pygame.Rect,
+    grid: list[list[int]],
+    tile: int,
+    room_index: int,
+    rng: random.Random,
 ) -> list[RoomObstacle]:
     obstacles: list[RoomObstacle] = []
-    for row, row_cells in enumerate(grid):
-        col = 0
-        while col < len(row_cells):
-            if row_cells[col] == 0:
-                col += 1
+    thickness = max(
+        config.MAZE_WALL_MIN_THICKNESS,
+        int(round(tile * config.MAZE_WALL_THICKNESS_RATIO)),
+    )
+    candidates: list[tuple[int, int]] = []
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+    for row in range(1, max(1, rows - 1)):
+        for col in range(1, max(1, cols - 1)):
+            if grid[row][col] != 1:
                 continue
-            start = col
-            while col < len(row_cells) and row_cells[col] != 0:
-                col += 1
-            rect = pygame.Rect(
-                bounds.left + start * tile,
-                bounds.top + row * tile,
-                (col - start) * tile,
+            left, right, up, down = _maze_wall_neighbors(grid, row, col)
+            horizontal = left or right
+            vertical = up or down
+            if horizontal and vertical:
+                continue
+            candidates.append((row, col))
+
+    destructible_cells: set[tuple[int, int]] = set()
+    if candidates:
+        target_count = max(
+            1,
+            int(round(len(candidates) * config.MAZE_DESTRUCTIBLE_WALL_RATIO)),
+        )
+        target_count = min(len(candidates), target_count)
+        destructible_cells = set(rng.sample(candidates, target_count))
+    destructible_hp = (
+        config.MAZE_DESTRUCTIBLE_WALL_HP_BASE
+        + max(0, room_index - 1) * config.MAZE_DESTRUCTIBLE_WALL_HP_STEP
+    )
+    for row, row_cells in enumerate(grid):
+        for col, cell in enumerate(row_cells):
+            if cell == 0:
+                continue
+            left, right, up, down = _maze_wall_neighbors(grid, row, col)
+            horizontal = left or right
+            vertical = up or down
+            destructible = (row, col) in destructible_cells
+            hp = destructible_hp if destructible else 0.0
+            for rect in _maze_wall_rects(
+                bounds,
+                row,
+                col,
                 tile,
-            )
-            obstacles.append(_make_obstacle(rect, False, 0.0, "wall"))
+                thickness,
+                horizontal=horizontal,
+                vertical=vertical,
+            ):
+                obstacles.append(_make_obstacle(rect, destructible, hp, "wall"))
     return obstacles
 
 
@@ -940,14 +1015,17 @@ def _choose_layout_template(room_index: int, door_count: int, rng: random.Random
     grids_22 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 2)]
     grids_23 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 3)]
     rings = [template for template in LAYOUT_TEMPLATES if template.get("centerpiece") == "ring"]
+    weighted_singles = [*singles, *singles]
+    weighted_rings = [*rings, *rings]
+    weighted_grids_23 = list(grids_23[:1]) if len(grids_23) > 1 else list(grids_23)
     if room_index <= 2:
-        pool = [*singles, *lines_12, *grids_22[:2]]
+        pool = [*weighted_singles, *lines_12, *grids_22[:2], *rings]
     elif door_count >= 3:
-        pool = [*grids_22, *lines_12, *grids_23, *lines_13, *rings]
+        pool = [*weighted_singles, *grids_22, *lines_12, *weighted_grids_23, *lines_13, *weighted_rings]
     elif room_index >= 7:
-        pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
+        pool = [*weighted_singles, *lines_12, *lines_13, *grids_22, *weighted_grids_23, *weighted_rings]
     else:
-        pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
+        pool = [*weighted_singles, *lines_12, *lines_13, *grids_22, *weighted_grids_23, *weighted_rings]
     return rng.choice(pool)
 
 

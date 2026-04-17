@@ -6,6 +6,27 @@ import pygame
 
 
 @dataclass
+class EnemyNavigationState:
+    committed_target: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    obstacle_anchor: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    sample_origin: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    last_desired_move: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    last_actual_move: pygame.Vector2 = field(default_factory=pygame.Vector2)
+    commit_timer: float = 0.0
+    repath_timer: float = 0.0
+    los_timer: float = 0.0
+    blocked_timer: float = 0.0
+    obstacle_mode_timer: float = 0.0
+    sample_timer: float = 0.0
+    has_los: bool = False
+    force_repath: bool = True
+    pending_unstuck: bool = False
+    route_mode: str = "direct"
+    obstacle_failures: int = 0
+    unstuck_side: int = 1
+
+
+@dataclass
 class Bullet:
     pos: pygame.Vector2
     velocity: pygame.Vector2
@@ -29,6 +50,9 @@ class Bullet:
     trail_interval: float = 0.0
     trail_timer: float = 0.0
     expires_on_room_clear: bool = False
+    homing_strength: float = 0.0
+    homing_radius: float = 0.0
+    affect_enemies: bool = True
 
 
 @dataclass
@@ -52,8 +76,13 @@ class Enemy:
     action_timer: float = 0.0
     special_timer: float = 0.0
     alt_special_timer: float = 0.0
+    summon_timer: float = 0.0
     stun_timer: float = 0.0
+    phase: int = 1
+    shield_damage_multiplier: float = 1.0
+    immobile: bool = False
     statuses: list["ActiveEnemyStatus"] = field(default_factory=list)
+    navigation: EnemyNavigationState = field(default_factory=EnemyNavigationState)
 
 
 @dataclass

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import pygame
 
+from . import config
+
 
 @dataclass(frozen=True)
 class ShopOfferTemplate:
@@ -34,19 +36,19 @@ class NukeEventProfile:
 SHOP_OFFER_POOL = (
     ShopOfferTemplate("repair", "纳米修复", "回复 40 生命", 18),
     ShopOfferTemplate("shield_charge", "护盾电池", "回复 30 护盾", 20),
-    ShopOfferTemplate("shield_core", "护盾核心", "护盾上限 +10，并回复 14 护盾", 28),
-    ShopOfferTemplate("damage", "火力扩容", "武器伤害 +12%", 30),
-    ShopOfferTemplate("rapid", "枪机校准", "射击冷却 -6%", 26),
+    ShopOfferTemplate("shield_core", "护盾核心", "护盾上限 +10%，并回复 30% 护盾", 28),
+    ShopOfferTemplate("damage", "火力扩容", "武器伤害 +10%", 30),
+    ShopOfferTemplate("rapid", "枪机校准", "射击冷却 -5%", 26),
     ShopOfferTemplate("accuracy", "瞄具微调", "子弹偏移 -18%，准度提升", 28),
     ShopOfferTemplate("shotgun_range", "加长枪膛", "子弹距离增加，扩散略微收束", 28),
-    ShopOfferTemplate("basketball_training", "篮球实习生", "坤坤：篮球速度上升，伤害小幅提高", 28),
-    ShopOfferTemplate("what_can_i_say", "what can i say", "曼巴重击伤害与眩晕时间小幅提高", 30),
-    ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +6%", 30),
-    ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +18%", 32),
+    ShopOfferTemplate("basketball_training", "篮球实习生", "坤坤：篮球体积增大，速度 +10%", 28),
+    ShopOfferTemplate("what_can_i_say", "what can i say", "曼巴重击眩晕延长，扇形角度增大", 30),
+    ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +5%", 30),
+    ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +15%", 32),
     ShopOfferTemplate("speed", "动力靴组", "移动速度 +18", 24),
     ShopOfferTemplate("magnet", "磁环模组", "拾取范围 +16", 22),
     ShopOfferTemplate("enemy_bullet_slow", "迟滞电场", "敌方子弹速度 -12%", 28),
-    ShopOfferTemplate("credit_boost", "回收协议", "晶片获取 +25%", 30),
+    ShopOfferTemplate("credit_boost", "回收协议", "晶片获取 +20%", 30),
     ShopOfferTemplate("ricochet", "折射弹仓", "攻击增加 1 次反射", 34),
 )
 
@@ -78,6 +80,17 @@ def enemy_scaling(room_index: int, floor_index: int) -> tuple[float, float, floa
     ) * (1.0 + floor_damage_adjustment(floor_index))
     speed_bonus = difficulty * 1.5 + floor_bonus * 4.0
     return hp_scale, damage_scale, speed_bonus
+
+
+def boss_floor_hp_multiplier(floor_index: int) -> float:
+    if floor_index < config.BOSS_FLOOR_HP_SCALING_START:
+        return 1.0
+    extra_floors = max(0, floor_index - config.BOSS_FLOOR_HP_SCALING_START + 1)
+    bonus = min(
+        config.BOSS_FLOOR_HP_SCALING_CAP,
+        extra_floors * config.BOSS_FLOOR_HP_SCALING_STEP,
+    )
+    return 1.0 + bonus
 
 
 def nuke_event_profile(room_index: int, floor_index: int) -> NukeEventProfile:
