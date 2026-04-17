@@ -17,6 +17,7 @@ from .balance import (
     enemy_credit_drop,
     enemy_scaling,
     hazard_profile,
+    nuke_event_profile,
     obstacle_credit_drop,
     reward_credit_drop,
     scale_shop_cost,
@@ -25,6 +26,7 @@ from .content import (
     CHARACTERS,
     CHARACTER_PROFILES,
     CHARACTER_SKILLS,
+    PLAYER_BUFFS,
     STAGES,
     SUPPLY_OPTIONS,
     TITLE_PANEL_INFO,
@@ -44,6 +46,8 @@ from .content import (
     WeaponOption,
 )
 from .entities import (
+    ActiveEnemyStatus,
+    ActivePlayerBuff,
     Bullet,
     Enemy,
     ExplosionWave,
@@ -79,6 +83,14 @@ class ShopOffer:
 
 
 @dataclass
+class RoomEventState:
+    key: str
+    anchor: pygame.Vector2 | None = None
+    spawned: bool = False
+    completed: bool = False
+
+
+@dataclass
 class RoomState:
     room_id: int
     coord: tuple[int, int]
@@ -96,6 +108,8 @@ class RoomState:
     enemies: list[Enemy] = field(default_factory=list)
     pickups: list[Pickup] = field(default_factory=list)
     shop_offers: list[ShopOffer] = field(default_factory=list)
+    room_event: RoomEventState | None = None
+    challenge_tag: str | None = None
 
 
 class Game:
@@ -166,9 +180,10 @@ class Game:
         self.dash_distance = float(config.DASH_DISTANCE)
         self.dash_cooldown = float(config.DASH_COOLDOWN)
         self.dash_timer = 0.0
-        self.pulse_damage = float(config.PULSE_DAMAGE)
         self.pulse_radius = float(config.PULSE_RADIUS)
+        self.pulse_push_force = float(config.PULSE_PUSH_FORCE)
         self.pulse_cooldown = float(config.PULSE_COOLDOWN)
+        self.pulse_effect_duration = float(config.PULSE_EFFECT_DURATION)
         self.pulse_effect_timer = 0.0
         self.pulse_effect_total = 0.0
         self.basketball_damage = float(config.BASKETBALL_DAMAGE)
@@ -191,10 +206,14 @@ class Game:
         self.active_skill_label = "脉冲"
         self.iframes = 0.0
         self.last_move = pygame.Vector2(1, 0)
+        self.player_revives_remaining = 0
+        self.kunkun_chip_barrage_used = False
+        self.q_skill_hold_active = False
+        self.q_skill_hold_timer = 0.0
 
         self.level = 1
         self.xp = 0
-        self.xp_to_level = 30
+        self.xp_to_level = config.XP_TO_LEVEL_BASE
         self.room_index = 1
         self.base_progress = 1
         self.floor_index = 1
@@ -213,6 +232,10 @@ class Game:
         self.screen_shake_timer = 0.0
         self.screen_shake_total = 0.0
         self.screen_shake_strength = 0.0
+        self.screen_flash_timer = 0.0
+        self.screen_flash_total = 0.0
+        self.screen_flash_alpha = 0
+        self.screen_flash_color = (255, 255, 255)
 
         self.bullets: list[Bullet] = []
         self.enemies: list[Enemy] = []
@@ -222,6 +245,7 @@ class Game:
         self.laser_traces: list[LaserTrace] = []
         self.explosion_waves: list[ExplosionWave] = []
         self.gas_clouds: list[GasCloud] = []
+        self.player_buffs: list[ActivePlayerBuff] = []
         self.obstacles: list[RoomObstacle] = []
         self.room_layout: RoomLayout | None = None
         self.room_clear_delay = 0.0
@@ -504,6 +528,64 @@ class Game:
                 avoid += delta.normalize() * (52 / max(12, dist_sq**0.5))
         return avoid
 
+    def move_enemy_with_navigation(
+        self,
+        enemy: Enemy,
+        desired_delta: pygame.Vector2,
+        nav_target: pygame.Vector2,
+        dt: float,
+    ) -> None:
+        moved = self.move_circle_with_collisions(
+            enemy.pos, enemy.radius, desired_delta
+        )
+        if (
+            desired_delta.length_squared() <= 16
+            or moved.length_squared() >= desired_delta.length_squared() * 0.18
+        ):
+            return
+
+        candidate_dirs: list[pygame.Vector2] = []
+        toward_target = nav_target - enemy.pos
+        if toward_target.length_squared() > 0:
+            toward_target = toward_target.normalize()
+            candidate_dirs.extend(
+                (
+                    toward_target.rotate(90),
+                    toward_target.rotate(-90),
+                    toward_target,
+                )
+            )
+        if desired_delta.length_squared() > 0:
+            desired_dir = desired_delta.normalize()
+            candidate_dirs.extend(
+                (
+                    desired_dir.rotate(90),
+                    desired_dir.rotate(-90),
+                    -desired_dir,
+                )
+            )
+
+        tried: set[tuple[int, int]] = set()
+        nudge_distance = max(16.0, enemy.speed * dt * 0.72)
+        best_gain = moved.length_squared()
+        for direction in candidate_dirs:
+            if direction.length_squared() <= 0:
+                continue
+            normalized = direction.normalize()
+            key = (int(round(normalized.x * 1000)), int(round(normalized.y * 1000)))
+            if key in tried:
+                continue
+            tried.add(key)
+            before = enemy.pos.copy()
+            extra = self.move_circle_with_collisions(
+                enemy.pos,
+                enemy.radius,
+                normalized * nudge_distance,
+            )
+            if extra.length_squared() > best_gain + 4:
+                return
+            enemy.pos = before
+
     def start_run(self, start_room: int | None = None) -> None:
         self.restart_run()
         self.apply_selected_loadout()
@@ -536,6 +618,20 @@ class Game:
     def mamba_upgrade_cap_reached(self) -> bool:
         return self.mamba_upgrade_level >= config.MAMBA_UPGRADE_CAP
 
+    def kunkun_chip_bonus_tiers(self) -> int:
+        if self.selected_character.key != "kunkun":
+            return 0
+        return min(
+            int(round(config.KUNKUN_CHIP_DAMAGE_CAP / config.KUNKUN_CHIP_DAMAGE_STEP)),
+            self.credits // config.KUNKUN_CHIP_DAMAGE_INTERVAL,
+        )
+
+    def player_damage_multiplier(self) -> float:
+        return 1.0 + self.kunkun_chip_bonus_tiers() * config.KUNKUN_CHIP_DAMAGE_STEP
+
+    def displayed_player_damage(self) -> float:
+        return self.player_damage * self.player_damage_multiplier()
+
     def configure_character_skill(self, skill_key: str) -> None:
         skill = self.character_skill_data(skill_key)
         self.active_skill_key = skill.key
@@ -549,8 +645,252 @@ class Game:
             "mamba_smash": self.try_mamba_smash,
         }.get(self.active_skill_key)
 
+    def reset_q_skill_hold_state(self) -> None:
+        self.q_skill_hold_active = False
+        self.q_skill_hold_timer = 0.0
+
+    def begin_q_skill_hold(self) -> bool:
+        if (
+            self.selected_character.key != "kunkun"
+            or self.active_skill_key != "basketball"
+        ):
+            return False
+        self.q_skill_hold_active = True
+        self.q_skill_hold_timer = 0.0
+        return True
+
+    def release_q_skill_hold(self) -> bool:
+        if not self.q_skill_hold_active:
+            return False
+        hold_time = self.q_skill_hold_timer
+        self.reset_q_skill_hold_state()
+        if hold_time >= config.KUNKUN_BARRAGE_HOLD_TIME:
+            self.try_kunkun_chip_barrage()
+        else:
+            self.try_use_active_skill()
+        return True
+
     def active_skill_status_text(self) -> str:
         return "\u5c31\u7eea" if self.skill_timer <= 0 else f"{self.skill_timer:.1f}s"
+
+    def active_player_buff_status_text(self) -> str:
+        if not self.player_buffs:
+            return ""
+        parts: list[str] = []
+        for buff in sorted(self.player_buffs, key=lambda item: item.duration, reverse=True):
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is None:
+                continue
+            parts.append(f"{definition.hud_label} {max(1, int(math.ceil(buff.duration)))}s")
+            if len(parts) >= 2:
+                break
+        return " \u00b7 ".join(parts)
+
+    def get_player_buff(self, key: str) -> ActivePlayerBuff | None:
+        for buff in self.player_buffs:
+            if buff.key == key and buff.duration > 0:
+                return buff
+        return None
+
+    def has_player_buff(self, key: str) -> bool:
+        return self.get_player_buff(key) is not None
+
+    def add_player_buff(self, key: str, duration: float, potency: float = 1.0) -> None:
+        definition = PLAYER_BUFFS.get(key)
+        if definition is None or duration <= 0:
+            return
+        existing = self.get_player_buff(key)
+        if existing is None:
+            self.player_buffs.append(
+                ActivePlayerBuff(
+                    key=key,
+                    duration=duration,
+                    max_duration=duration,
+                    potency=potency,
+                )
+            )
+        else:
+            existing.duration = max(existing.duration, duration)
+            existing.max_duration = max(existing.max_duration, duration)
+            existing.potency = max(existing.potency, potency)
+        self.floaters.append(
+            FloatingText(
+                self.player_pos.copy() + pygame.Vector2(0, -26),
+                definition.name,
+                definition.color,
+                0.9,
+            )
+        )
+        self.message = f"获得 {definition.name} 状态"
+
+    def update_player_buffs(self, dt: float) -> None:
+        remaining: list[ActivePlayerBuff] = []
+        for buff in self.player_buffs:
+            buff.duration = max(0.0, buff.duration - dt)
+            if buff.duration > 0:
+                remaining.append(buff)
+        self.player_buffs = remaining
+
+    def player_healing_blocked(self) -> bool:
+        for buff in self.player_buffs:
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is not None and definition.blocks_healing and buff.duration > 0:
+                return True
+        return False
+
+    def show_heal_blocked_feedback(self, pos: pygame.Vector2 | None = None) -> None:
+        anchor = self.player_pos.copy() if pos is None else pos.copy()
+        self.floaters.append(
+            FloatingText(anchor, "辐射抑制", config.RADIATION_COLOR, 0.72)
+        )
+        self.message = "辐射状态下无法回血"
+
+    def heal_player(
+        self, amount: float, *, pos: pygame.Vector2 | None = None
+    ) -> float:
+        if amount <= 0:
+            return 0.0
+        if self.player_healing_blocked():
+            self.show_heal_blocked_feedback(pos)
+            return 0.0
+        healed = min(float(amount), max(0.0, self.player_max_hp - self.player_hp))
+        if healed <= 0:
+            return 0.0
+        self.player_hp += healed
+        anchor = self.player_pos.copy() if pos is None else pos.copy()
+        self.floaters.append(
+            FloatingText(anchor, f"+{int(round(healed))} 生命", config.HEAL_COLOR, 0.6)
+        )
+        return healed
+
+    def player_damage_taken_multiplier(self) -> float:
+        multiplier = 1.0
+        for buff in self.player_buffs:
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is None or buff.duration <= 0:
+                continue
+            multiplier *= definition.damage_taken_multiplier
+        return max(0.0, multiplier)
+
+    def player_prevents_stun(self) -> bool:
+        for buff in self.player_buffs:
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is not None and definition.prevents_stun and buff.duration > 0:
+                return True
+        return False
+
+    def player_actions_locked(self) -> bool:
+        for buff in self.player_buffs:
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is not None and definition.locks_input and buff.duration > 0:
+                return True
+        return False
+
+    def cancel_skill_cast(self) -> None:
+        self.skill_cast_key = None
+        self.skill_cast_timer = 0.0
+        self.skill_cast_total = 0.0
+        self.skill_cast_direction = pygame.Vector2()
+
+    def try_apply_player_stun(self, duration: float) -> bool:
+        if duration <= 0 or self.player_prevents_stun():
+            return False
+        self.cancel_skill_cast()
+        self.add_player_buff("stunned", duration)
+        return True
+
+    def add_enemy_status(
+        self,
+        enemy: Enemy,
+        key: str,
+        duration: float,
+        damage: float,
+        tick_interval: float,
+        color: tuple[int, int, int],
+    ) -> None:
+        if duration <= 0 or damage <= 0 or tick_interval <= 0:
+            return
+        existing = next((status for status in enemy.statuses if status.key == key), None)
+        if existing is None:
+            enemy.statuses.append(
+                ActiveEnemyStatus(
+                    key=key,
+                    duration=duration,
+                    max_duration=duration,
+                    tick_interval=tick_interval,
+                    tick_timer=tick_interval,
+                    damage=damage,
+                    color=color,
+                )
+            )
+            self.floaters.append(
+                FloatingText(enemy.pos.copy(), "中毒", color, 0.42)
+            )
+            return
+        existing.duration = max(existing.duration, duration)
+        existing.max_duration = max(existing.max_duration, duration)
+        existing.damage = max(existing.damage, damage)
+        existing.tick_interval = min(existing.tick_interval, tick_interval)
+        existing.tick_timer = min(existing.tick_timer, existing.tick_interval)
+        existing.color = color
+
+    def enemy_has_status(self, enemy: Enemy, key: str) -> bool:
+        return any(status.key == key and status.duration > 0 for status in enemy.statuses)
+
+    def update_enemy_statuses(self, enemy: Enemy, dt: float) -> bool:
+        remaining: list[ActiveEnemyStatus] = []
+        for status in enemy.statuses:
+            status.duration = max(0.0, status.duration - dt)
+            status.tick_timer -= dt
+            while status.duration > 0 and status.tick_timer <= 0:
+                enemy.hp -= status.damage
+                self.spawn_particles(
+                    enemy.pos.copy(),
+                    status.color,
+                    2,
+                    0.36,
+                    (0.8, 1.8),
+                    (0.06, 0.14),
+                )
+                self.floaters.append(
+                    FloatingText(
+                        enemy.pos.copy() + pygame.Vector2(0, -16),
+                        str(int(round(status.damage))),
+                        status.color,
+                        0.28,
+                    )
+                )
+                status.tick_timer += max(0.12, status.tick_interval)
+                if enemy.hp <= 0:
+                    self.kill_enemy(enemy)
+                    enemy.statuses.clear()
+                    return True
+            if status.duration > 0:
+                remaining.append(status)
+        enemy.statuses = remaining
+        return False
+
+    def apply_player_attack_effects(self, enemy: Enemy) -> None:
+        if enemy.hp <= 0:
+            return
+        for buff in self.player_buffs:
+            definition = PLAYER_BUFFS.get(buff.key)
+            if definition is None:
+                continue
+            if (
+                definition.poison_on_hit_duration > 0
+                and definition.poison_on_hit_damage > 0
+                and definition.poison_tick_interval > 0
+            ):
+                potency = max(0.1, buff.potency)
+                self.add_enemy_status(
+                    enemy,
+                    "poison",
+                    definition.poison_on_hit_duration * potency,
+                    definition.poison_on_hit_damage * potency,
+                    definition.poison_tick_interval,
+                    config.POISON_STATUS_COLOR,
+                )
 
     def selected_character_skill_summary(self, character: CharacterOption | None = None) -> str:
         current = self.selected_character if character is None else character
@@ -571,8 +911,10 @@ class Game:
         self.dash_distance += profile.dash_distance_bonus
         self.dash_cooldown *= profile.dash_cooldown_mult
         self.pulse_cooldown *= profile.pulse_cooldown_mult
-        self.pulse_damage += profile.pulse_damage_bonus
+        self.pulse_push_force += profile.pulse_push_bonus
         self.credits += profile.starting_credits
+        if self.selected_character.key == "mamba":
+            self.player_revives_remaining = 1
         self.configure_character_skill(profile.skill_key)
 
         self.weapon_mode = "projectile"
@@ -760,10 +1102,14 @@ class Game:
             room_id: self.make_room_state(room_def)
             for room_id, room_def in self.floor_map.rooms.items()
         }
+        self.kunkun_chip_barrage_used = False
+        self.reset_q_skill_hold_state()
+        self.assign_floor_challenge_room()
         self.bullets.clear()
         self.laser_traces.clear()
         self.explosion_waves.clear()
         self.floaters.clear()
+        self.gas_clouds.clear()
         self.invalidate_navigation_fields()
         self.enemy_pause_timer = 0.0
         self.floor_entry_enemy_grace_pending = True
@@ -771,6 +1117,51 @@ class Game:
         if self.floor_map is None:
             return
         self.enter_room(self.floor_map.start_room_id, None)
+
+    def room_supports_nuke_event(self, layout: RoomLayout) -> bool:
+        return layout.grid_size == (1, 1) or layout.centerpiece == "ring"
+
+    def should_spawn_nuke_event(self, room_def: FloorRoom) -> bool:
+        if room_def.room_type not in {"combat", "elite"}:
+            return False
+        if not self.room_supports_nuke_event(room_def.layout):
+            return False
+        profile = nuke_event_profile(room_def.difficulty, self.floor_index)
+        return self.rng.random() < profile.chance
+
+    def assign_floor_challenge_room(self) -> None:
+        if (
+            self.floor_index % 3 != 0
+            or self.rng.random() >= config.CHALLENGE_ROOM_CHANCE
+        ):
+            return
+        boss_room = next(
+            (room for room in self.room_states.values() if room.room_type == "boss"),
+            None,
+        )
+        if boss_room is None:
+            return
+        boss_room.challenge_tag = "high_difficulty"
+
+    def build_nuke_obstacle(
+        self, pos: pygame.Vector2, room_index: int
+    ) -> RoomObstacle:
+        profile = nuke_event_profile(room_index, self.floor_index)
+        size = int(
+            config.NUKE_OBSTACLE_SIZE
+            + min(14, max(0, self.floor_index - 1) * 2)
+        )
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (int(pos.x), int(pos.y))
+        return RoomObstacle(
+            rect=rect,
+            destructible=True,
+            max_hp=profile.hp,
+            hp=profile.hp,
+            tag="nuke",
+            fill_color=config.NUKE_FILL_COLOR,
+            border_color=config.NUKE_BORDER_COLOR,
+        )
 
     def make_room_state(self, room_def: FloorRoom) -> RoomState:
         state = RoomState(
@@ -794,6 +1185,22 @@ class Game:
             )
             if anchors:
                 state.feature_anchor = anchors[0]
+        if self.should_spawn_nuke_event(room_def):
+            anchors = self.get_room_feature_points(
+                room_def.layout,
+                1,
+                collision_radius=config.NUKE_OBSTACLE_COLLISION_RADIUS,
+            )
+            if anchors:
+                anchor = anchors[0]
+                state.room_event = RoomEventState(
+                    key="nuke",
+                    anchor=anchor.copy(),
+                    spawned=True,
+                )
+                room_def.layout.obstacles.append(
+                    self.build_nuke_obstacle(anchor, room_def.difficulty)
+                )
         return state
 
     def spawn_room(self) -> None:
@@ -814,6 +1221,7 @@ class Game:
         self.bullets.clear()
         self.laser_traces.clear()
         self.explosion_waves.clear()
+        self.gas_clouds.clear()
         self.invalidate_navigation_fields()
         self.room_clear_delay = 0.0
         self.room_transition_cooldown = 0.45
@@ -834,11 +1242,11 @@ class Game:
             self.prepare_room_state(room_state)
         else:
             if (
-                room_state.room_type in ("combat", "elite", "boss")
+                room_state.room_type in ("combat", "maze", "elite", "boss")
                 and not room_state.resolved
             ):
                 room_state.doors_locked = bool(room_state.enemies)
-            self.message = f"第 {self.floor_index} 层 · {self.room_type_label(room_state.room_type)}"
+            self.message = f"第 {self.floor_index} 层 · {self.room_display_label(room_state)}"
 
     def prepare_room_state(self, room_state: RoomState) -> None:
         arena = self.arena_rect()
@@ -864,7 +1272,7 @@ class Game:
             self.floor_entry_enemy_grace_pending = False
         self.spawn_room_pickups(arena)
         self.populate_room_enemies(room_state, arena, spawn_min_distance)
-        room_label = self.room_type_label(room_state.room_type)
+        room_label = self.room_display_label(room_state)
         if self.enemy_pause_timer > 0:
             self.message = f"第 {self.floor_index} 层 · {room_label}（缓冲）"
         else:
@@ -877,11 +1285,31 @@ class Game:
         if theme == "反应堆室":
             shooter_cap += 1
         shooter_count = 0
+        if room_state.challenge_tag == "high_difficulty":
+            self.populate_high_difficulty_room(
+                room_state,
+                arena,
+                min_distance=min_distance,
+                shooter_cap=max(1, shooter_cap),
+            )
+            return
         if room_state.room_type == "combat":
             count = 4 + room_state.difficulty * 2
             if theme == "开阔车间":
                 count += 1
             elif theme == "封锁壁垒":
+                count = max(4, count - 1)
+            for _ in range(count):
+                enemy = self.make_enemy(arena, min_distance=min_distance)
+                shooter_count = self.limit_shooter(enemy, shooter_count, shooter_cap)
+                room_state.enemies.append(enemy)
+            self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
+            return
+
+        if room_state.room_type == "maze":
+            count = 3 + room_state.difficulty * 2
+            shooter_cap = max(1, shooter_cap - 1)
+            if theme == "封锁壁垒":
                 count = max(4, count - 1)
             for _ in range(count):
                 enemy = self.make_enemy(arena, min_distance=min_distance)
@@ -920,6 +1348,35 @@ class Game:
                 room_state.enemies.append(enemy)
             self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
 
+    def populate_high_difficulty_room(
+        self,
+        room_state: RoomState,
+        arena: pygame.Rect,
+        *,
+        min_distance: float,
+        shooter_cap: int,
+    ) -> None:
+        room_state.enemies.append(
+            self.make_boss(
+                arena,
+                min_distance=max(220.0, min_distance),
+                variant="challenge",
+            )
+        )
+        add_count = 1 + max(0, room_state.difficulty // 4)
+        if room_state.room_type == "elite":
+            add_count += 1
+        shooter_count = 0
+        for idx in range(add_count):
+            enemy = self.make_enemy(arena, min_distance=min_distance)
+            if idx == 0 and enemy.kind == "grunt":
+                self.promote_elite_enemy(enemy)
+            shooter_count = self.limit_shooter(
+                enemy, shooter_count, max(1, shooter_cap)
+            )
+            room_state.enemies.append(enemy)
+        self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
+
     def themed_enemy_kind(self, theme: str) -> str | None:
         if theme == "废料堆场":
             return "toxic_bloater"
@@ -934,7 +1391,7 @@ class Game:
             return 2
         if room_state.room_type == "boss":
             return 1
-        return 1 if room_state.room_type == "combat" else 0
+        return 1 if room_state.room_type in {"combat", "maze"} else 0
 
     def make_theme_enemy(self, arena: pygame.Rect, kind: str, min_distance: float = 180.0) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
@@ -1177,12 +1634,39 @@ class Game:
         labels = {
             "start": "起始间",
             "combat": "战斗间",
+            "maze": "迷宫房",
             "elite": "精英间",
             "shop": "商店房",
             "treasure": "宝箱房",
             "boss": "首领房",
         }
         return labels.get(room_type, "战斗区")
+
+    def room_display_label(self, room: RoomState | None) -> str:
+        if room is None:
+            return "未进入房间"
+        if room.challenge_tag == "high_difficulty":
+            return "高难首领房" if room.room_type == "boss" else "高难房"
+        return self.room_type_label(room.room_type)
+
+    def room_badge_color(self, room: RoomState | None) -> tuple[int, int, int]:
+        if room is None:
+            return config.PLAYER_COLOR
+        if room.challenge_tag == "high_difficulty":
+            return config.CHALLENGE_ROOM_COLOR
+        return {
+            "maze": config.MAZE_ROOM_COLOR,
+            "boss": config.BOSS_COLOR,
+            "elite": config.BULLET_ELITE_COLOR,
+            "shop": config.CREDIT_COLOR,
+            "treasure": config.ITEM_COLOR,
+        }.get(room.room_type, config.PLAYER_COLOR)
+
+    def current_arena_border_color(self) -> tuple[int, int, int]:
+        room = self.current_room_state
+        if room is not None and room.challenge_tag == "high_difficulty":
+            return config.CHALLENGE_ROOM_COLOR
+        return config.ARENA_BORDER
 
     def is_safe_feature_position(
         self,
@@ -1424,7 +1908,13 @@ class Game:
             shoot_timer=self.rng.random() * shoot_cooldown if shoot_cooldown else 0.0,
         )
 
-    def make_boss(self, arena: pygame.Rect, min_distance: float = 220.0) -> Enemy:
+    def make_boss(
+        self,
+        arena: pygame.Rect,
+        min_distance: float = 220.0,
+        *,
+        variant: str = "",
+    ) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
             pos = self.random_free_position(
                 arena,
@@ -1438,24 +1928,45 @@ class Game:
             self.room_index, self.floor_index
         )
         max_hp = 300 * hp_scale
+        speed = (config.BOSS_SPEED + speed_bonus * 0.35) * config.ENEMY_GLOBAL_SPEED_SCALE
+        damage = config.ENEMY_TOUCH_DAMAGE * 1.2 * damage_scale
+        radius = config.BOSS_RADIUS
+        xp_reward = 50 + self.room_index * 3
+        color = config.BOSS_COLOR
+        shoot_timer = 0.7
+        special_timer = 1.5
+        alt_special_timer = 3.4
+        knockback_resist = 2.8
+        if variant == "challenge":
+            max_hp *= config.CHALLENGE_BOSS_HP_MULT
+            speed *= 1.08
+            damage *= config.CHALLENGE_BOSS_DAMAGE_MULT
+            radius += 4
+            xp_reward += 28
+            color = config.CHALLENGE_ROOM_COLOR
+            shoot_timer = 0.45
+            special_timer = 0.0
+            alt_special_timer = config.CHALLENGE_BOSS_DASH_COOLDOWN * 0.5
+            knockback_resist = 3.2
         return Enemy(
             pos=pos,
             hp=max_hp,
             max_hp=max_hp,
-            speed=(config.BOSS_SPEED + speed_bonus * 0.35) * config.ENEMY_GLOBAL_SPEED_SCALE,
-            radius=config.BOSS_RADIUS,
-            damage=config.ENEMY_TOUCH_DAMAGE * 1.2 * damage_scale,
-            xp_reward=50 + self.room_index * 3,
-            color=config.BOSS_COLOR,
-            knockback_resist=2.8,
+            speed=speed,
+            radius=radius,
+            damage=damage,
+            xp_reward=xp_reward,
+            color=color,
+            knockback_resist=knockback_resist,
             is_boss=True,
             kind="boss",
+            variant=variant,
             shoot_cooldown=enemy_attack_cooldown(
                 "boss", self.room_index, self.floor_index
             ),
-            shoot_timer=0.7,
-            special_timer=1.5,
-            alt_special_timer=3.4,
+            shoot_timer=shoot_timer,
+            special_timer=special_timer,
+            alt_special_timer=alt_special_timer,
         )
 
     def give_xp(self, amount: int) -> None:
@@ -1463,7 +1974,10 @@ class Game:
         while self.xp >= self.xp_to_level:
             self.xp -= self.xp_to_level
             self.level += 1
-            self.xp_to_level = int(self.xp_to_level * 1.22) + 10
+            self.xp_to_level = (
+                int(self.xp_to_level * config.XP_TO_LEVEL_MULTIPLIER)
+                + config.XP_TO_LEVEL_FLAT
+            )
             self.mode = "level_up"
             self.upgrade_choices = self.roll_upgrade_choices()
 
@@ -1488,9 +2002,9 @@ class Game:
             self.player_speed += config.SPEED_UPGRADE_BONUS
         elif upgrade.key == "max_hp":
             self.player_max_hp += 12
-            self.player_hp = min(self.player_max_hp, self.player_hp + 12)
+            self.heal_player(12)
         elif upgrade.key == "heal":
-            self.player_hp = min(self.player_max_hp, self.player_hp + 22)
+            self.heal_player(22)
         elif upgrade.key == "shield_core":
             self.player_max_shield += 10
             self.player_shield = min(self.player_max_shield, self.player_shield + 14)
@@ -1547,7 +2061,7 @@ class Game:
             self.pickup_radius += 16
         elif upgrade.key == "pulse":
             if self.active_skill_key == "pulse":
-                self.pulse_damage += 8
+                self.pulse_effect_duration += config.PULSE_UPGRADE_DURATION_STEP
                 self.pulse_cooldown = max(4.8, self.pulse_cooldown * 0.94)
             else:
                 applied_name = f"{upgrade.name}（当前技能不可用）"
@@ -1586,7 +2100,7 @@ class Game:
 
     def claim_supply(self, option: SupplyOption) -> None:
         if option.key == "repair":
-            self.player_hp = min(self.player_max_hp, self.player_hp + 40)
+            self.heal_player(40)
         elif option.key == "overclock":
             self.player_damage += 4
             self.skill_timer = 0.0
@@ -1613,6 +2127,19 @@ class Game:
         self.screen_shake_timer = max(self.screen_shake_timer, duration)
         self.screen_shake_total = max(self.screen_shake_total, duration)
 
+    def add_screen_flash(
+        self,
+        duration: float,
+        color: tuple[int, int, int],
+        alpha: int,
+    ) -> None:
+        if duration <= 0 or alpha <= 0:
+            return
+        self.screen_flash_timer = max(self.screen_flash_timer, duration)
+        self.screen_flash_total = max(self.screen_flash_total, duration)
+        self.screen_flash_color = color
+        self.screen_flash_alpha = max(self.screen_flash_alpha, alpha)
+
     def update_screen_shake(self, dt: float) -> None:
         if self.screen_shake_timer <= 0:
             self.screen_shake_timer = 0.0
@@ -1624,6 +2151,18 @@ class Game:
             self.screen_shake_timer = 0.0
             self.screen_shake_total = 0.0
             self.screen_shake_strength = 0.0
+
+    def update_screen_flash(self, dt: float) -> None:
+        if self.screen_flash_timer <= 0:
+            self.screen_flash_timer = 0.0
+            self.screen_flash_total = 0.0
+            self.screen_flash_alpha = 0
+            return
+        self.screen_flash_timer = max(0.0, self.screen_flash_timer - dt)
+        if self.screen_flash_timer <= 0:
+            self.screen_flash_timer = 0.0
+            self.screen_flash_total = 0.0
+            self.screen_flash_alpha = 0
 
     def get_stage_rects(self) -> list[pygame.Rect]:
         return [pygame.Rect(44, 136 + idx * 54, 338, 44) for idx in range(len(STAGES))]
@@ -1730,6 +2269,7 @@ class Game:
         affect_player: bool = True,
         enemy_knockback: float = 0.0,
         wave_ttl: float = 0.42,
+        player_attack: bool = False,
     ) -> None:
         self.spawn_explosion_wave(center, radius, color, ttl=wave_ttl)
         for enemy in self.enemies[:]:
@@ -1739,6 +2279,8 @@ class Game:
             falloff = max(0.46, 1.0 - distance / max(1.0, radius + enemy.radius))
             dealt = damage * falloff
             enemy.hp -= dealt
+            if player_attack and enemy.hp > 0:
+                self.apply_player_attack_effects(enemy)
             if enemy_knockback > 0:
                 push_dir = enemy.pos - center
                 if push_dir.length_squared() <= 0:
@@ -1773,6 +2315,99 @@ class Game:
                 ),
             )
             self.apply_obstacle_damage(obstacle, obstacle_damage * falloff)
+
+    def nuke_blast_radius(self, center: pygame.Vector2) -> float:
+        arena = self.arena_rect()
+        corners = (
+            pygame.Vector2(arena.topleft),
+            pygame.Vector2(arena.topright),
+            pygame.Vector2(arena.bottomleft),
+            pygame.Vector2(arena.bottomright),
+        )
+        return max(center.distance_to(corner) for corner in corners) + 24.0
+
+    def spawn_nuke_gas_clouds(
+        self, center: pygame.Vector2, cloud_count: int
+    ) -> None:
+        for idx in range(max(2, cloud_count)):
+            angle = self.rng.uniform(0.0, math.tau)
+            distance = self.rng.uniform(0.0, 48.0 + idx * 22.0)
+            pos = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * distance
+            self.clamp_circle_to_arena(pos, 18)
+            target_radius = self.rng.uniform(62.0, 136.0)
+            ttl = self.rng.uniform(4.6, 7.4)
+            damage = self.rng.uniform(4.2, 7.0)
+            self.gas_clouds.append(
+                self.make_gas_cloud(
+                    pos,
+                    target_radius,
+                    ttl,
+                    damage,
+                    start_ratio=0.16,
+                    growth_time=0.76,
+                    activation_delay=0.46,
+                )
+            )
+
+    def detonate_nuke(self, obstacle: RoomObstacle, impact_pos: pygame.Vector2) -> None:
+        profile = nuke_event_profile(self.room_index, self.floor_index)
+        blast_radius = self.nuke_blast_radius(impact_pos)
+        self.spawn_particles(
+            impact_pos.copy(),
+            config.NUKE_BORDER_COLOR,
+            34,
+            1.9,
+            (2.2, 7.0),
+            (0.18, 0.54),
+        )
+        self.spawn_particles(
+            impact_pos.copy(),
+            config.NUKE_CORE_COLOR,
+            18,
+            1.2,
+            (1.8, 5.2),
+            (0.14, 0.38),
+        )
+        self.floaters.append(
+            FloatingText(impact_pos.copy(), "核爆", config.NUKE_BORDER_COLOR, 0.8)
+        )
+        self.apply_explosion_damage(
+            impact_pos,
+            blast_radius,
+            profile.enemy_damage,
+            config.NUKE_BORDER_COLOR,
+            source=obstacle,
+            affect_player=False,
+            enemy_knockback=96.0,
+            wave_ttl=0.62,
+        )
+        if self.iframes <= 0:
+            player_distance = self.player_pos.distance_to(impact_pos)
+            if player_distance <= blast_radius + config.PLAYER_RADIUS:
+                falloff = max(
+                    0.46,
+                    1.0
+                    - player_distance
+                    / max(1.0, blast_radius + config.PLAYER_RADIUS),
+                )
+                self.damage_player(
+                    profile.player_damage * falloff,
+                    config.NUKE_BORDER_COLOR,
+                    0.30,
+                )
+        self.spawn_nuke_gas_clouds(impact_pos, profile.cloud_count)
+        self.add_player_buff("radiation", config.RADIATION_BUFF_DURATION)
+        self.add_screen_shake(
+            config.NUKE_SCREEN_SHAKE, config.NUKE_SCREEN_SHAKE_DURATION
+        )
+        self.add_screen_flash(
+            config.NUKE_FLASH_DURATION,
+            (255, 255, 255),
+            config.NUKE_FLASH_ALPHA,
+        )
+        if self.current_room_state is not None and self.current_room_state.room_event is not None:
+            self.current_room_state.room_event.completed = True
+        self.message = "核弹引爆，区域被辐射污染"
 
     def handle_destroyed_obstacle(
         self, obstacle: RoomObstacle, impact_pos: pygame.Vector2
@@ -1817,6 +2452,8 @@ class Game:
                 config.BULLET_SHOCK_COLOR,
                 source=obstacle,
             )
+        elif tag == "nuke":
+            self.detonate_nuke(obstacle, impact_pos)
         elif tag == "bullet":
             self.spawn_bullet_barrel_burst(impact_pos, obstacle.rect)
         elif tag == "toxic" or (
@@ -2135,6 +2772,11 @@ class Game:
                     self.handle_dead_click(event.pos)
             elif event.type == pygame.MOUSEWHEEL and self.mode == "title":
                 self.scroll_title_panel(-event.y * config.TITLE_PANEL_SCROLL_STEP)
+            elif event.type == pygame.KEYUP:
+                if event.key == pygame.K_q and self.mode == "playing":
+                    self.release_q_skill_hold()
+                elif event.key == pygame.K_q:
+                    self.reset_q_skill_hold_state()
             elif event.type == pygame.KEYDOWN:
                 if self.mode == "floor_confirm":
                     if event.key == pygame.K_ESCAPE:
@@ -2217,7 +2859,8 @@ class Game:
                 elif self.mode == "playing" and event.key == pygame.K_SPACE:
                     self.try_dash()
                 elif self.mode == "playing" and event.key == pygame.K_q:
-                    self.try_use_active_skill()
+                    if not self.begin_q_skill_hold():
+                        self.try_use_active_skill()
                 elif self.mode == "playing" and event.key == pygame.K_e:
                     self.handle_interaction()
                 elif self.mode == "level_up":
@@ -2243,6 +2886,8 @@ class Game:
                         self.claim_supply(self.supply_choices[2])
 
     def handle_interaction(self) -> None:
+        if self.player_actions_locked():
+            return
         room = self.current_room_state
         if room is None:
             return
@@ -2300,10 +2945,12 @@ class Game:
             self.message = f"已购买 {applied_name}"
             return
         elif offer.key == "repair":
-            self.player_hp = min(self.player_max_hp, self.player_hp + 40)
-            self.floaters.append(
-                FloatingText(self.player_pos.copy(), "+40 生命", config.HEAL_COLOR, 0.8)
-            )
+            if self.player_healing_blocked():
+                offer.sold = False
+                self.credits += offer.cost
+                self.show_heal_blocked_feedback()
+                return
+            self.heal_player(40)
         elif offer.key == "shield_charge":
             self.player_shield = min(self.player_max_shield, self.player_shield + 30)
             self.floaters.append(
@@ -2471,13 +3118,17 @@ class Game:
 
     def update(self, dt: float) -> None:
         self.update_screen_shake(dt)
+        self.update_screen_flash(dt)
         if self.mode == "floor_transition":
+            self.reset_q_skill_hold_state()
             self.update_floor_transition(dt)
             return
         if self.mode == "title":
+            self.reset_q_skill_hold_state()
             self.update_title_panel_scroll(dt)
             return
         if self.mode != "playing":
+            self.reset_q_skill_hold_state()
             return
         self.iframes = max(0.0, self.iframes - dt)
         self.fire_timer = max(0.0, self.fire_timer - dt)
@@ -2485,7 +3136,9 @@ class Game:
         self.skill_timer = max(0.0, self.skill_timer - dt)
         self.room_transition_cooldown = max(0.0, self.room_transition_cooldown - dt)
         self.enemy_pause_timer = max(0.0, self.enemy_pause_timer - dt)
+        self.update_player_buffs(dt)
         self.update_player(dt)
+        self.update_skill_input_state(dt)
         self.update_active_skill_effects(dt)
         self.update_bullets(dt)
         if self.enemy_pause_timer <= 0:
@@ -2498,7 +3151,7 @@ class Game:
         self.update_floaters(dt)
         if (
             self.current_room_state is not None
-            and self.current_room_state.room_type in ("combat", "elite", "boss")
+            and self.current_room_state.room_type in ("combat", "maze", "elite", "boss")
             and self.current_room_state.doors_locked
             and not self.enemies
         ):
@@ -2516,6 +3169,11 @@ class Game:
         self.check_door_transition()
 
     def update_player(self, dt: float) -> None:
+        if self.player_actions_locked():
+            self.move_circle_with_collisions(
+                self.player_pos, config.PLAYER_RADIUS, pygame.Vector2()
+            )
+            return
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(
             float(keys[pygame.K_d]) - float(keys[pygame.K_a]),
@@ -2544,7 +3202,7 @@ class Game:
                 self.fire_timer = self.fire_cooldown
 
     def try_dash(self) -> None:
-        if self.dash_timer > 0:
+        if self.dash_timer > 0 or self.player_actions_locked():
             return
         direction = (
             self.last_move
@@ -2563,7 +3221,7 @@ class Game:
         )
 
     def try_use_active_skill(self) -> None:
-        if self.skill_timer > 0:
+        if self.skill_timer > 0 or self.player_actions_locked():
             return
         handler = self.active_skill_handler()
         if handler is not None:
@@ -2571,6 +3229,16 @@ class Game:
             return
         self.message = f"{self.active_skill_name} \u6682\u4e0d\u53ef\u7528"
 
+    def update_skill_input_state(self, dt: float) -> None:
+        if not self.q_skill_hold_active:
+            return
+        if (
+            self.selected_character.key != "kunkun"
+            or self.active_skill_key != "basketball"
+        ):
+            self.reset_q_skill_hold_state()
+            return
+        self.q_skill_hold_timer += dt
 
     def current_skill_aim_direction(self) -> pygame.Vector2:
         aim = pygame.Vector2(pygame.mouse.get_pos()) - self.player_pos
@@ -2582,35 +3250,73 @@ class Game:
             )
         return aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
 
+    def clear_enemy_bullets_in_radius(
+        self, center: pygame.Vector2, radius: float
+    ) -> int:
+        cleared = 0
+        remaining: list[Bullet] = []
+        for bullet in self.bullets:
+            if bullet.friendly or bullet.hits_all:
+                remaining.append(bullet)
+                continue
+            if bullet.pos.distance_to(center) > radius + bullet.radius:
+                remaining.append(bullet)
+                continue
+            cleared += 1
+            self.spawn_particles(
+                bullet.pos.copy(),
+                config.BULLET_SHOCK_COLOR,
+                4,
+                0.34,
+                (1.0, 2.4),
+                (0.06, 0.16),
+            )
+        self.bullets = remaining
+        return cleared
+
+    def pulse_effect_progress(self) -> float:
+        if self.pulse_effect_total <= 0:
+            return 0.0
+        return max(
+            0.0,
+            min(
+                1.0,
+                1.0 - self.pulse_effect_timer / max(0.01, self.pulse_effect_total),
+            ),
+        )
+
+    def pulse_effect_radius(self) -> float:
+        progress = self.pulse_effect_progress()
+        eased = 1.0 - (1.0 - progress) ** 2.35
+        return config.PULSE_EFFECT_INNER_RADIUS + (
+            self.pulse_radius - config.PULSE_EFFECT_INNER_RADIUS
+        ) * eased
+
     def try_pulse(self) -> None:
         if self.skill_timer > 0:
             return
         self.skill_timer = self.active_skill_cooldown()
-        self.pulse_effect_total = config.PULSE_EFFECT_DURATION
+        self.pulse_effect_total = self.pulse_effect_duration
         self.pulse_effect_timer = self.pulse_effect_total
-        hits = 0
+        cleared = self.clear_enemy_bullets_in_radius(self.player_pos, self.pulse_radius)
+        pushed = 0
         for enemy in self.enemies[:]:
             dist = enemy.pos.distance_to(self.player_pos)
             if dist <= self.pulse_radius + enemy.radius:
-                enemy.hp -= self.pulse_damage
-                hits += 1
+                pushed += 1
                 knock = enemy.pos - self.player_pos
+                if knock.length_squared() <= 0:
+                    knock = pygame.Vector2(
+                        self.rng.uniform(-1.0, 1.0), self.rng.uniform(-1.0, 1.0)
+                    )
                 if knock.length_squared() > 0:
                     self.move_circle_with_collisions(
                         enemy.pos,
                         enemy.radius,
-                        knock.normalize() * 32 / enemy.knockback_resist,
+                        knock.normalize()
+                        * self.pulse_push_force
+                        / max(0.35, enemy.knockback_resist),
                     )
-                self.floaters.append(
-                    FloatingText(
-                        enemy.pos.copy(),
-                        f"{int(self.pulse_damage)}",
-                        config.BULLET_SHOCK_COLOR,
-                        0.45,
-                    )
-                )
-                if enemy.hp <= 0:
-                    self.kill_enemy(enemy)
         self.spawn_particles(
             self.player_pos.copy(),
             config.BULLET_SHOCK_COLOR,
@@ -2622,22 +3328,31 @@ class Game:
         self.floaters.append(
             FloatingText(
                 self.player_pos.copy(),
-                f"脉冲命中 {hits}",
+                " · ".join(
+                    part
+                    for part in (
+                        f"清弹 {cleared}" if cleared else "",
+                        f"推开 {pushed}" if pushed else "",
+                    )
+                    if part
+                )
+                or "脉冲释放",
                 config.BULLET_SHOCK_COLOR,
                 0.6,
             )
         )
 
-    def try_basketball_skill(self) -> None:
-        if self.skill_timer > 0:
+    def spawn_basketball_projectile(self, direction: pygame.Vector2) -> None:
+        if direction.length_squared() <= 0:
             return
-        direction = self.current_skill_aim_direction()
-        self.skill_timer = self.active_skill_cooldown()
-        spawn_pos = self.player_pos.copy() + direction * (config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2)
+        direction = direction.normalize()
+        spawn_pos = self.player_pos.copy() + direction * (
+            config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2
+        )
         self.spawn_projectile(
             spawn_pos,
             direction,
-            self.basketball_damage,
+            self.basketball_damage * self.player_damage_multiplier(),
             speed=self.basketball_projectile_speed(),
             ttl=config.BASKETBALL_TTL,
             radius=config.BASKETBALL_RADIUS,
@@ -2651,9 +3366,69 @@ class Game:
             trail_interval=config.BASKETBALL_TRAIL_INTERVAL,
             expires_on_room_clear=True,
         )
-        self.spawn_particles(spawn_pos.copy(), config.BASKETBALL_COLOR, 8, 0.92, (1.6, 3.8), (0.12, 0.24))
-        self.floaters.append(FloatingText(self.player_pos.copy(), "篮球出手", config.BASKETBALL_COLOR, 0.45))
 
+    def try_basketball_skill(self) -> None:
+        if self.skill_timer > 0:
+            return
+        direction = self.current_skill_aim_direction()
+        self.skill_timer = self.active_skill_cooldown()
+        spawn_pos = self.player_pos.copy() + direction.normalize() * (
+            config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2
+        )
+        self.spawn_basketball_projectile(direction)
+        self.spawn_particles(
+            spawn_pos.copy(),
+            config.BASKETBALL_COLOR,
+            8,
+            0.92,
+            (1.6, 3.8),
+            (0.12, 0.24),
+        )
+        self.floaters.append(
+            FloatingText(self.player_pos.copy(), "\u7bee\u7403\u51fa\u624b", config.BASKETBALL_COLOR, 0.45)
+        )
+
+    def try_kunkun_chip_barrage(self) -> bool:
+        if (
+            self.selected_character.key != "kunkun"
+            or self.active_skill_key != "basketball"
+        ):
+            return False
+        if self.skill_timer > 0 or self.player_actions_locked():
+            return False
+        if self.kunkun_chip_barrage_used:
+            self.message = "\u672c\u5c42\u6676\u7247\u9f50\u5c04\u5df2\u53d1\u52a8"
+            return False
+        if self.credits < config.KUNKUN_BARRAGE_COST:
+            self.message = f"\u6676\u7247\u4e0d\u8db3 {config.KUNKUN_BARRAGE_COST}"
+            return False
+        self.credits -= config.KUNKUN_BARRAGE_COST
+        self.kunkun_chip_barrage_used = True
+        self.skill_timer = self.active_skill_cooldown()
+        directions = (
+            pygame.Vector2(1, 0),
+            pygame.Vector2(-1, 0),
+            pygame.Vector2(0, 1),
+            pygame.Vector2(0, -1),
+            pygame.Vector2(1, 1),
+            pygame.Vector2(1, -1),
+            pygame.Vector2(-1, 1),
+            pygame.Vector2(-1, -1),
+        )
+        for direction in directions:
+            self.spawn_basketball_projectile(direction)
+        self.spawn_particles(
+            self.player_pos.copy(),
+            config.BASKETBALL_COLOR,
+            18,
+            1.12,
+            (1.8, 4.4),
+            (0.12, 0.28),
+        )
+        self.floaters.append(
+            FloatingText(self.player_pos.copy(), "\u6676\u7247\u9f50\u5c04", config.BASKETBALL_COLOR, 0.7)
+        )
+        return True
 
     def try_mamba_smash(self) -> None:
         if self.skill_timer > 0 or self.skill_cast_key is not None:
@@ -2693,7 +3468,11 @@ class Game:
         )
 
     def update_active_skill_effects(self, dt: float) -> None:
-        self.pulse_effect_timer = max(0.0, self.pulse_effect_timer - dt)
+        if self.pulse_effect_timer > 0:
+            self.pulse_effect_timer = max(0.0, self.pulse_effect_timer - dt)
+            self.clear_enemy_bullets_in_radius(
+                self.player_pos, self.pulse_effect_radius()
+            )
         self.mamba_impact_timer = max(0.0, self.mamba_impact_timer - dt)
         if self.skill_cast_key is None:
             self.skill_cast_timer = 0.0
@@ -2777,6 +3556,8 @@ class Game:
                 continue
             hits += 1
             enemy.hp -= self.mamba_skill_damage
+            if enemy.hp > 0:
+                self.apply_player_attack_effects(enemy)
             push_dir = offset if offset.length_squared() > 0 else direction
             if push_dir.length_squared() > 0:
                 push_dir = push_dir.normalize() + direction * 0.22
@@ -3088,6 +3869,7 @@ class Game:
         return max(35, min(99, int(round(100 - self.player_spread * 520))))
 
     def roll_player_hit(self, base_damage: float) -> tuple[float, bool]:
+        base_damage *= self.player_damage_multiplier()
         crit = self.rng.random() < self.player_crit_chance
         if crit:
             return base_damage * self.player_crit_multiplier, True
@@ -3225,6 +4007,7 @@ class Game:
             affect_player=False,
             enemy_knockback=bullet.explosion_knockback,
             wave_ttl=0.34,
+            player_attack=True,
         )
         self.add_screen_shake(config.ROCKET_SCREEN_SHAKE, config.ROCKET_SCREEN_SHAKE_DURATION)
 
@@ -3393,6 +4176,8 @@ class Game:
                     enemy.hp -= hit_damage
                     beam_hits += 1
                     damaged_enemies.add(id(enemy))
+                    if enemy.hp > 0:
+                        self.apply_player_attack_effects(enemy)
                     self.move_circle_with_collisions(
                         enemy.pos, enemy.radius, push_dir * 16 / enemy.knockback_resist
                     )
@@ -3706,6 +4491,8 @@ class Game:
                     impact_radius = enemy.radius
                     impact_normal = bullet.pos - impact_pos
                     enemy.hp -= bullet.damage
+                    if enemy.hp > 0:
+                        self.apply_player_attack_effects(enemy)
                     if bullet.velocity.length_squared() > 0 and bullet.knockback > 0:
                         push = bullet.velocity.normalize() * bullet.knockback / enemy.knockback_resist
                         self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
@@ -3885,17 +4672,29 @@ class Game:
             return max(14.0, enemy.damage * 1.02)
         return max(10.0, enemy.damage * 0.86)
 
+    def enemy_uses_laser_attack(self, enemy: Enemy) -> bool:
+        return enemy.kind == "laser" or (
+            enemy.kind == "boss" and enemy.variant == "challenge"
+        )
+
     def get_enemy_laser_timing(self, enemy: Enemy) -> tuple[float, float]:
         telegraph_window = 0.95 if enemy.is_boss else 0.78
         lock_window = 0.34 if enemy.is_boss else 0.24
+        if enemy.variant == "challenge":
+            telegraph_window = 0.88
+            lock_window = 0.30
         return telegraph_window, lock_window
 
     def get_enemy_laser_damage(self, enemy: Enemy) -> float:
+        if enemy.variant == "challenge":
+            return max(22.0, enemy.damage * 1.14)
         if enemy.is_boss:
             return max(18.0, enemy.damage * 1.05)
         return max(12.0, enemy.damage * 0.92)
 
     def get_enemy_laser_width(self, enemy: Enemy) -> int:
+        if enemy.variant == "challenge":
+            return 18
         return 16 if enemy.is_boss else 12
 
     def start_enemy_action(
@@ -3907,11 +4706,79 @@ class Game:
         if delta.length_squared() > 0:
             enemy.aim_direction = delta.normalize()
 
+    def start_challenge_boss_dash(
+        self, enemy: Enemy, direction: pygame.Vector2
+    ) -> None:
+        enemy.action_state = "dash_charge"
+        enemy.action_timer = config.CHALLENGE_BOSS_DASH_WINDUP
+        enemy.alt_special_timer = config.CHALLENGE_BOSS_DASH_COOLDOWN
+        if direction.length_squared() > 0:
+            enemy.aim_direction = direction.normalize()
+        enemy.shoot_timer = max(
+            enemy.shoot_timer,
+            config.CHALLENGE_BOSS_DASH_WINDUP + config.CHALLENGE_BOSS_DASH_DURATION,
+        )
+        self.floaters.append(
+            FloatingText(
+                enemy.pos.copy() + pygame.Vector2(0, -42),
+                "冲刺",
+                config.CHALLENGE_ROOM_COLOR,
+                0.6,
+            )
+        )
+
+    def finish_challenge_boss_dash(self, enemy: Enemy) -> None:
+        self.execute_boss_stomp(enemy)
+        enemy.action_state = ""
+        enemy.action_timer = 0.0
+        enemy.aim_direction = pygame.Vector2()
+
+    def advance_challenge_boss_dash(self, enemy: Enemy, dt: float) -> bool:
+        enemy.action_timer = max(0.0, enemy.action_timer - dt)
+        direction = enemy.aim_direction
+        if direction.length_squared() <= 0:
+            direction = self.player_pos - enemy.pos
+        if direction.length_squared() > 0:
+            self.move_circle_with_collisions(
+                enemy.pos,
+                enemy.radius,
+                direction.normalize() * config.CHALLENGE_BOSS_DASH_SPEED * dt,
+            )
+        if enemy.pos.distance_to(self.player_pos) <= enemy.radius + config.PLAYER_RADIUS + 4:
+            if self.iframes <= 0:
+                self.damage_player(
+                    max(
+                        24.0,
+                        enemy.damage * config.CHALLENGE_BOSS_DASH_DAMAGE_MULT,
+                    ),
+                    config.CHALLENGE_ROOM_COLOR,
+                    0.55,
+                )
+                self.try_apply_player_stun(config.CHALLENGE_BOSS_DASH_STUN)
+                if direction.length_squared() > 0:
+                    self.move_circle_with_collisions(
+                        self.player_pos,
+                        config.PLAYER_RADIUS,
+                        direction.normalize() * config.CHALLENGE_BOSS_DASH_PUSH,
+                    )
+            self.finish_challenge_boss_dash(enemy)
+            return True
+        if enemy.action_timer <= 0:
+            self.finish_challenge_boss_dash(enemy)
+            return True
+        return True
+
     def update_boss_action(self, enemy: Enemy, dt: float) -> bool:
         if enemy.kind != "boss" or not enemy.action_state:
             return False
+        if enemy.variant == "challenge" and enemy.action_state == "dash":
+            return self.advance_challenge_boss_dash(enemy, dt)
         enemy.action_timer = max(0.0, enemy.action_timer - dt)
         if enemy.action_timer > 0:
+            return True
+        if enemy.variant == "challenge" and enemy.action_state == "dash_charge":
+            enemy.action_state = "dash"
+            enemy.action_timer = config.CHALLENGE_BOSS_DASH_DURATION
             return True
         if enemy.action_state == "stomp":
             self.execute_boss_stomp(enemy)
@@ -3960,6 +4827,11 @@ class Game:
     def execute_boss_nova(self, enemy: Enemy) -> None:
         bullet_damage = max(11.0, enemy.damage * config.BOSS_NOVA_DAMAGE_MULTIPLIER)
         bullet_speed = config.BULLET_SPEED * 0.48 * self.enemy_bullet_speed_multiplier
+        bullet_color = (
+            config.CHALLENGE_ROOM_COLOR
+            if enemy.variant == "challenge"
+            else config.BULLET_ELITE_COLOR
+        )
         for idx in range(config.BOSS_NOVA_BULLETS):
             angle = math.tau * idx / config.BOSS_NOVA_BULLETS + self.rng.uniform(
                 -0.04, 0.04
@@ -3975,7 +4847,7 @@ class Game:
                     ttl=2.25,
                     pierce=0,
                     friendly=False,
-                    color=config.BULLET_ELITE_COLOR,
+                    color=bullet_color,
                 )
             )
         if enemy.aim_direction.length_squared() > 0:
@@ -3983,12 +4855,12 @@ class Game:
                 enemy,
                 enemy.aim_direction,
                 bullet_damage * 0.92,
-                config.BULLET_ELITE_COLOR,
+                bullet_color,
                 spread=0.12,
             )
         self.spawn_particles(
             enemy.pos.copy(),
-            config.BULLET_ELITE_COLOR,
+            bullet_color,
             18,
             1.35,
             (1.8, 4.8),
@@ -3998,7 +4870,7 @@ class Game:
             FloatingText(
                 enemy.pos.copy() + pygame.Vector2(0, -38),
                 "震荡齐射",
-                config.BULLET_ELITE_COLOR,
+                bullet_color,
                 0.7,
             )
         )
@@ -4012,6 +4884,8 @@ class Game:
 
     def update_enemies(self, dt: float) -> None:
         for enemy in self.enemies[:]:
+            if self.update_enemy_statuses(enemy, dt):
+                continue
             enemy.stun_timer = max(0.0, enemy.stun_timer - dt)
             if enemy.shoot_cooldown > 0:
                 enemy.shoot_timer -= dt
@@ -4190,34 +5064,70 @@ class Game:
                 else:
                     if enemy.kind == "boss" and delta_to_player.length_squared() > 0:
                         distance = delta_to_player.length()
-                        if (
-                            has_los
-                            and distance <= config.BOSS_STOMP_TRIGGER_RANGE
-                            and enemy.special_timer <= 0
-                        ):
-                            self.start_enemy_action(
-                                enemy, "stomp", config.BOSS_STOMP_TELEGRAPH
+                        if enemy.variant == "challenge":
+                            telegraph_window, lock_window = self.get_enemy_laser_timing(
+                                enemy
                             )
-                            enemy.special_timer = config.BOSS_STOMP_COOLDOWN
-                            enemy.shoot_timer = max(
-                                enemy.shoot_timer, config.BOSS_STOMP_TELEGRAPH + 0.18
-                            )
-                            continue
-                        if (
-                            has_los
-                            and config.BOSS_NOVA_MIN_RANGE
-                            <= distance
-                            <= config.BOSS_NOVA_MAX_RANGE
-                            and enemy.alt_special_timer <= 0
-                        ):
-                            self.start_enemy_action(
-                                enemy, "nova", config.BOSS_NOVA_TELEGRAPH
-                            )
-                            enemy.alt_special_timer = config.BOSS_NOVA_COOLDOWN
-                            enemy.shoot_timer = max(
-                                enemy.shoot_timer, config.BOSS_NOVA_TELEGRAPH + 0.24
-                            )
-                            continue
+                            tracking = 0 < enemy.shoot_timer <= telegraph_window
+                            locked = 0 < enemy.shoot_timer <= lock_window
+                            if tracking and not locked:
+                                enemy.aim_direction = delta_to_player.normalize()
+                            elif enemy.aim_direction.length_squared() <= 0:
+                                enemy.aim_direction = delta_to_player.normalize()
+                            if (
+                                has_los
+                                and distance <= config.CHALLENGE_BOSS_DASH_TRIGGER_RANGE
+                                and enemy.alt_special_timer <= 0
+                            ):
+                                self.start_challenge_boss_dash(
+                                    enemy, delta_to_player.normalize()
+                                )
+                                continue
+                            if (
+                                has_los
+                                and config.BOSS_NOVA_MIN_RANGE
+                                <= distance
+                                <= config.BOSS_NOVA_MAX_RANGE
+                                and enemy.special_timer <= 0
+                            ):
+                                self.start_enemy_action(
+                                    enemy, "nova", config.BOSS_NOVA_TELEGRAPH
+                                )
+                                enemy.special_timer = config.BOSS_NOVA_COOLDOWN
+                                enemy.shoot_timer = max(
+                                    enemy.shoot_timer,
+                                    config.BOSS_NOVA_TELEGRAPH + 0.24,
+                                )
+                                continue
+                        else:
+                            if (
+                                has_los
+                                and distance <= config.BOSS_STOMP_TRIGGER_RANGE
+                                and enemy.special_timer <= 0
+                            ):
+                                self.start_enemy_action(
+                                    enemy, "stomp", config.BOSS_STOMP_TELEGRAPH
+                                )
+                                enemy.special_timer = config.BOSS_STOMP_COOLDOWN
+                                enemy.shoot_timer = max(
+                                    enemy.shoot_timer, config.BOSS_STOMP_TELEGRAPH + 0.18
+                                )
+                                continue
+                            if (
+                                has_los
+                                and config.BOSS_NOVA_MIN_RANGE
+                                <= distance
+                                <= config.BOSS_NOVA_MAX_RANGE
+                                and enemy.alt_special_timer <= 0
+                            ):
+                                self.start_enemy_action(
+                                    enemy, "nova", config.BOSS_NOVA_TELEGRAPH
+                                )
+                                enemy.alt_special_timer = config.BOSS_NOVA_COOLDOWN
+                                enemy.shoot_timer = max(
+                                    enemy.shoot_timer, config.BOSS_NOVA_TELEGRAPH + 0.24
+                                )
+                                continue
                     speed_scale = 1.18 if enemy.kind == "charger" else 1.0
                     pursue_direction = (
                         delta_to_player.normalize()
@@ -4235,6 +5145,24 @@ class Game:
                         )
                     move_delta += pursue_direction * enemy.speed * speed_scale * dt
                     if (
+                        enemy.kind == "boss"
+                        and enemy.variant == "challenge"
+                        and enemy.shoot_timer <= 0
+                        and has_los
+                        and enemy.aim_direction.length_squared() > 0
+                    ):
+                        self.fire_laser(
+                            enemy.pos.copy(),
+                            enemy.aim_direction,
+                            self.get_enemy_laser_damage(enemy),
+                            self.get_enemy_laser_width(enemy),
+                            config.ENEMY_LASER_COLOR,
+                            friendly=False,
+                            trace_ttl=0.22,
+                        )
+                        enemy.shoot_timer = enemy.shoot_cooldown
+                        enemy.aim_direction = pygame.Vector2()
+                    elif (
                         enemy.kind in ("elite", "boss")
                         and enemy.shoot_timer <= 0
                         and has_los
@@ -4252,7 +5180,7 @@ class Game:
                 avoid = self.get_enemy_avoidance(enemy)
                 if avoid.length_squared() > 0:
                     move_delta += avoid.normalize() * enemy.speed * 0.42 * dt
-            self.move_circle_with_collisions(enemy.pos, enemy.radius, move_delta)
+            self.move_enemy_with_navigation(enemy, move_delta, nav_target, dt)
             if (
                 enemy.pos.distance_to(self.player_pos)
                 <= enemy.radius + config.PLAYER_RADIUS
@@ -4361,15 +5289,7 @@ class Game:
 
     def apply_pickup_effect(self, pickup: Pickup) -> None:
         if pickup.kind == "heal":
-            self.player_hp = min(self.player_max_hp, self.player_hp + pickup.amount)
-            self.floaters.append(
-                FloatingText(
-                    self.player_pos.copy(),
-                    f"+{pickup.amount} 生命",
-                    config.HEAL_COLOR,
-                    0.6,
-                )
-            )
+            self.heal_player(pickup.amount)
         elif pickup.kind == "shield":
             self.player_shield = min(
                 self.player_max_shield, self.player_shield + pickup.amount
@@ -4383,6 +5303,7 @@ class Game:
                 )
             )
         elif pickup.kind == "credit":
+            before_tiers = self.kunkun_chip_bonus_tiers()
             gained = max(1, int(round(pickup.amount * self.credit_gain_multiplier)))
             self.credits += gained
             self.floaters.append(
@@ -4390,6 +5311,17 @@ class Game:
                     self.player_pos.copy(), f"+{gained} 晶片", config.CREDIT_COLOR, 0.6
                 )
             )
+            after_tiers = self.kunkun_chip_bonus_tiers()
+            if after_tiers > before_tiers:
+                bonus_pct = int(after_tiers * config.KUNKUN_CHIP_DAMAGE_STEP * 100)
+                self.floaters.append(
+                    FloatingText(
+                        self.player_pos.copy() + pygame.Vector2(0, -18),
+                        f"晶片火力 +{bonus_pct}%",
+                        config.BASKETBALL_COLOR,
+                        0.72,
+                    )
+                )
         elif pickup.kind == "item":
             effect = self.rng.choice(("damage", "speed", "cooldown", "shield"))
             if effect == "damage":
@@ -4434,7 +5366,11 @@ class Game:
         arena = self.arena_rect()
         pygame.draw.rect(self.screen, config.ARENA_FILL, arena, border_radius=12)
         pygame.draw.rect(
-            self.screen, config.ARENA_BORDER, arena, width=3, border_radius=12
+            self.screen,
+            self.current_arena_border_color(),
+            arena,
+            width=3,
+            border_radius=12,
         )
 
         if self.room_layout is not None:
@@ -4536,6 +5472,33 @@ class Game:
                     max(4, min(rect.width, rect.height) // 5),
                     2,
                 )
+            elif obstacle.tag == "nuke":
+                center = pygame.Vector2(rect.center)
+                core_radius = max(8, min(rect.width, rect.height) // 6)
+                pygame.draw.circle(
+                    self.screen,
+                    config.NUKE_CORE_COLOR,
+                    center,
+                    core_radius,
+                )
+                pygame.draw.circle(
+                    self.screen,
+                    config.NUKE_BORDER_COLOR,
+                    center,
+                    core_radius + 8,
+                    2,
+                )
+                for angle in (math.pi * 1.5, math.pi / 6, math.pi * 5 / 6):
+                    arm = pygame.Vector2(math.cos(angle), math.sin(angle))
+                    start = center + arm * (core_radius + 3)
+                    end = center + arm * (core_radius + 15)
+                    pygame.draw.line(
+                        self.screen,
+                        config.NUKE_BORDER_COLOR,
+                        start,
+                        end,
+                        3,
+                    )
             if obstacle.destructible and obstacle.max_hp > 0:
                 ratio = max(0.0, obstacle.hp / obstacle.max_hp)
                 bar = pygame.Rect(rect.left, rect.bottom + 4, rect.width, 5)
@@ -4611,10 +5574,17 @@ class Game:
                 pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
 
         for enemy in self.enemies:
-            pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
-            self.draw_actor_face(
-                enemy.pos, enemy.radius, enemy.kind, is_boss=enemy.is_boss
-            )
+            if enemy.kind == "boss" and enemy.variant == "challenge":
+                self.draw_challenge_boss_avatar(enemy)
+            elif enemy.kind == "boss":
+                self.draw_standard_boss_avatar(enemy)
+            elif enemy.kind == "shooter":
+                self.draw_shooter_avatar(enemy)
+            else:
+                pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
+                self.draw_actor_face(
+                    enemy.pos, enemy.radius, enemy.kind, is_boss=enemy.is_boss
+                )
             hp_ratio = max(0.0, enemy.hp / enemy.max_hp)
             width = enemy.radius * 2
             top = enemy.pos.y - enemy.radius - 10
@@ -4632,6 +5602,8 @@ class Game:
             )
             if enemy.stun_timer > 0:
                 self.draw_enemy_stun_marker(enemy)
+            if self.enemy_has_status(enemy, "poison"):
+                self.draw_enemy_poison_marker(enemy)
 
         self.draw_pulse_skill_effects()
         self.draw_mamba_skill_effects()
@@ -4663,16 +5635,26 @@ class Game:
             )
             self.screen.fill(config.BACKGROUND)
             self.screen.blit(frame, offset)
+        self.draw_screen_flash_overlay()
         pygame.display.flip()
+
+    def draw_screen_flash_overlay(self) -> None:
+        if self.screen_flash_timer <= 0 or self.screen_flash_total <= 0 or self.screen_flash_alpha <= 0:
+            return
+        life = self.screen_flash_timer / max(0.01, self.screen_flash_total)
+        alpha = int(self.screen_flash_alpha * (life ** 0.7))
+        if alpha <= 0:
+            return
+        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+        overlay.fill((*self.screen_flash_color, alpha))
+        self.screen.blit(overlay, (0, 0))
 
     def draw_pulse_skill_effects(self) -> None:
         if self.pulse_effect_timer <= 0 or self.pulse_effect_total <= 0:
             return
-        progress = 1.0 - self.pulse_effect_timer / max(0.01, self.pulse_effect_total)
+        progress = self.pulse_effect_progress()
         eased = 1.0 - (1.0 - progress) ** 2.35
-        radius = config.PULSE_EFFECT_INNER_RADIUS + (
-            self.pulse_radius - config.PULSE_EFFECT_INNER_RADIUS
-        ) * eased
+        radius = self.pulse_effect_radius()
         overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         ring_rect = pygame.Rect(0, 0, int(radius * 2), int(radius * 2))
         ring_rect.center = (int(self.player_pos.x), int(self.player_pos.y))
@@ -4781,6 +5763,74 @@ class Game:
             )
 
     def draw_player_avatar(self) -> None:
+        pos = self.player_pos
+        radius = config.PLAYER_RADIUS
+
+        if self.selected_character.key == "kunkun":
+            outline = (46, 52, 70)
+            body_color = config.PLAYER_HIT_COLOR if self.iframes > 0 else config.KUNKUN_BODY_COLOR
+            inner_radius = max(4, radius - 2)
+            pygame.draw.circle(self.screen, outline, pos, radius)
+            pygame.draw.circle(self.screen, body_color, pos, inner_radius)
+
+            overall_rect = pygame.Rect(
+                int(pos.x - inner_radius + 1),
+                int(pos.y - radius * 0.04),
+                int(inner_radius * 2 - 2),
+                int(inner_radius * 1.06),
+            )
+            pygame.draw.ellipse(self.screen, config.KUNKUN_OVERALL_COLOR, overall_rect)
+            bib = pygame.Rect(0, 0, int(radius * 1.08), max(10, int(radius * 0.82)))
+            bib.center = (int(pos.x), int(pos.y + radius * 0.26))
+            pygame.draw.rect(self.screen, config.KUNKUN_OVERALL_HILITE, bib, border_radius=6)
+            pygame.draw.rect(self.screen, outline, bib, 2, border_radius=6)
+
+            strap_width = max(4, int(radius * 0.24))
+            left_top = (int(pos.x - radius * 0.54), int(pos.y - radius * 0.34))
+            left_bottom = (int(pos.x - radius * 0.18), int(pos.y + radius * 0.16))
+            right_top = (int(pos.x + radius * 0.54), int(pos.y - radius * 0.34))
+            right_bottom = (int(pos.x + radius * 0.18), int(pos.y + radius * 0.16))
+            pygame.draw.line(self.screen, config.KUNKUN_OVERALL_COLOR, left_top, left_bottom, strap_width)
+            pygame.draw.line(self.screen, config.KUNKUN_OVERALL_COLOR, right_top, right_bottom, strap_width)
+            pygame.draw.circle(self.screen, outline, left_bottom, 2)
+            pygame.draw.circle(self.screen, outline, right_bottom, 2)
+
+            self.draw_actor_face(pos + pygame.Vector2(0, 1), radius, "player")
+
+            hair_cap = (
+                (int(pos.x - radius * 0.86), int(pos.y - radius * 0.10)),
+                (int(pos.x - radius * 0.62), int(pos.y - radius * 0.78)),
+                (int(pos.x - radius * 0.10), int(pos.y - radius * 1.02)),
+                (int(pos.x), int(pos.y - radius * 0.84)),
+                (int(pos.x + radius * 0.10), int(pos.y - radius * 1.02)),
+                (int(pos.x + radius * 0.62), int(pos.y - radius * 0.78)),
+                (int(pos.x + radius * 0.86), int(pos.y - radius * 0.10)),
+            )
+            left_bang = (
+                (int(pos.x - radius * 0.10), int(pos.y - radius * 0.86)),
+                (int(pos.x - radius * 0.50), int(pos.y - radius * 0.36)),
+                (int(pos.x - radius * 0.10), int(pos.y - radius * 0.08)),
+            )
+            right_bang = (
+                (int(pos.x + radius * 0.10), int(pos.y - radius * 0.86)),
+                (int(pos.x + radius * 0.50), int(pos.y - radius * 0.36)),
+                (int(pos.x + radius * 0.10), int(pos.y - radius * 0.08)),
+            )
+            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_SHADOW, hair_cap)
+            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_COLOR, left_bang)
+            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_COLOR, right_bang)
+            shine_rect = pygame.Rect(0, 0, int(radius * 0.92), int(radius * 0.58))
+            shine_rect.center = (int(pos.x), int(pos.y - radius * 0.62))
+            pygame.draw.arc(self.screen, (248, 250, 255), shine_rect, math.pi * 1.08, math.pi * 1.92, 2)
+            pygame.draw.line(
+                self.screen,
+                outline,
+                (int(pos.x), int(pos.y - radius * 0.92)),
+                (int(pos.x), int(pos.y - radius * 0.24)),
+                1,
+            )
+            return
+
         if self.selected_character.key != "mamba":
             player_color = (
                 config.PLAYER_HIT_COLOR if self.iframes > 0 else config.PLAYER_COLOR
@@ -4791,8 +5841,6 @@ class Game:
             self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
             return
 
-        pos = self.player_pos
-        radius = config.PLAYER_RADIUS
         outline_color = config.MAMBA_OUTLINE_COLOR
         upper_color = (
             config.MAMBA_GLOW_COLOR
@@ -4809,12 +5857,12 @@ class Game:
         pygame.draw.circle(self.screen, lower_color, pos, inner_radius)
         upper_rect = pygame.Rect(
             int(pos.x - inner_radius),
-            int(pos.y - inner_radius),
+            int(pos.y - inner_radius - radius * 0.06),
             int(inner_radius * 2),
-            int(inner_radius * 1.08),
+            int(inner_radius * 0.82),
         )
         pygame.draw.ellipse(self.screen, upper_color, upper_rect)
-        split_y = int(pos.y + radius * 0.02)
+        split_y = int(pos.y - radius * 0.18)
         pygame.draw.line(
             self.screen,
             outline_color,
@@ -4831,29 +5879,29 @@ class Game:
         )
 
         shoulder = (
-            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.04)),
-            (int(pos.x - radius * 0.22), int(pos.y - radius * 0.48)),
-            (int(pos.x + radius * 0.24), int(pos.y - radius * 0.18)),
+            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.10)),
+            (int(pos.x - radius * 0.22), int(pos.y - radius * 0.52)),
+            (int(pos.x + radius * 0.24), int(pos.y - radius * 0.20)),
             (int(pos.x + radius * 0.04), int(pos.y + radius * 0.02)),
-            (int(pos.x - radius * 0.52), int(pos.y + radius * 0.06)),
+            (int(pos.x - radius * 0.52), int(pos.y + radius * 0.04)),
         )
         pygame.draw.polygon(self.screen, config.MAMBA_TRIM_COLOR, shoulder)
         pygame.draw.circle(
             self.screen,
             outline_color,
-            (int(pos.x - radius * 0.60), int(pos.y - radius * 0.02)),
+            (int(pos.x - radius * 0.60), int(pos.y - radius * 0.08)),
             2,
         )
         pygame.draw.circle(
             self.screen,
             outline_color,
-            (int(pos.x + radius * 0.60), int(pos.y - radius * 0.02)),
+            (int(pos.x + radius * 0.60), int(pos.y - radius * 0.08)),
             2,
         )
 
         number = self.tiny_font.render("24", True, (248, 248, 250))
         number_rect = number.get_rect(
-            center=(int(pos.x), int(pos.y + radius * 0.42))
+            center=(int(pos.x), int(pos.y + radius * 0.34))
         )
         self.screen.blit(number, number_rect)
 
@@ -4868,6 +5916,228 @@ class Game:
             ) * orbit_radius
             pygame.draw.circle(self.screen, config.MAMBA_STUN_COLOR, point, 3)
             pygame.draw.circle(self.screen, config.MAMBA_TRIM_COLOR, point, 3, 1)
+
+    def draw_enemy_poison_marker(self, enemy: Enemy) -> None:
+        center = enemy.pos + pygame.Vector2(enemy.radius * 0.55, -enemy.radius - 8)
+        for offset in (-5, 0, 5):
+            pygame.draw.circle(
+                self.screen,
+                config.POISON_STATUS_COLOR,
+                (int(center.x + offset), int(center.y - abs(offset) * 0.3)),
+                2,
+            )
+
+    def draw_shooter_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (44, 28, 74)
+        shell = enemy.color
+        trim = (236, 226, 255)
+        glow = (255, 244, 170)
+        pygame.draw.circle(self.screen, outline, pos, radius + 2)
+        pygame.draw.circle(self.screen, shell, pos, radius - 1)
+
+        visor = pygame.Rect(0, 0, int(radius * 1.36), max(10, int(radius * 0.50)))
+        visor.center = (int(pos.x), int(pos.y - radius * 0.10))
+        pygame.draw.rect(self.screen, trim, visor, border_radius=6)
+        pygame.draw.rect(self.screen, outline, visor, 2, border_radius=6)
+        eye_y = visor.centery
+        for offset in (-radius * 0.22, radius * 0.22):
+            pygame.draw.circle(
+                self.screen,
+                glow,
+                (int(pos.x + offset), int(eye_y)),
+                max(2, int(radius * 0.10)),
+            )
+
+        direction = enemy.aim_direction
+        if direction.length_squared() <= 0:
+            direction = self.player_pos - enemy.pos
+        if direction.length_squared() <= 0:
+            direction = pygame.Vector2(0, 1)
+        direction = direction.normalize()
+        side = pygame.Vector2(-direction.y, direction.x)
+        barrel_base = pos + direction * (radius * 0.36)
+        for lane in (-1, 1):
+            start = barrel_base + side * (radius * 0.18 * lane)
+            end = start + direction * (radius * 0.94)
+            pygame.draw.line(
+                self.screen,
+                outline,
+                start,
+                end,
+                max(4, int(radius * 0.22)),
+            )
+            pygame.draw.line(
+                self.screen,
+                trim,
+                start,
+                end,
+                max(2, int(radius * 0.10)),
+            )
+            pygame.draw.circle(
+                self.screen,
+                outline,
+                (int(end.x), int(end.y)),
+                max(2, int(radius * 0.13)),
+            )
+        drum = pygame.Rect(0, 0, int(radius * 0.82), int(radius * 0.62))
+        drum.center = (int(pos.x), int(pos.y + radius * 0.36))
+        pygame.draw.rect(self.screen, outline, drum, border_radius=4)
+        pygame.draw.rect(self.screen, (94, 76, 132), drum.inflate(-4, -4), border_radius=4)
+
+    def draw_standard_boss_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (72, 20, 20)
+        shell = enemy.color
+        plate = (186, 86, 86)
+        glow = (255, 228, 182)
+        pygame.draw.circle(self.screen, outline, pos, radius + 4)
+        pygame.draw.circle(self.screen, shell, pos, radius)
+
+        crown = (
+            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.30)),
+            (int(pos.x - radius * 0.36), int(pos.y - radius * 0.96)),
+            (int(pos.x), int(pos.y - radius * 0.54)),
+            (int(pos.x + radius * 0.36), int(pos.y - radius * 0.96)),
+            (int(pos.x + radius * 0.78), int(pos.y - radius * 0.30)),
+        )
+        pygame.draw.polygon(self.screen, plate, crown)
+        pygame.draw.polygon(self.screen, outline, crown, 2)
+
+        left_guard = (
+            (int(pos.x - radius * 1.02), int(pos.y - radius * 0.08)),
+            (int(pos.x - radius * 0.48), int(pos.y - radius * 0.42)),
+            (int(pos.x - radius * 0.30), int(pos.y + radius * 0.24)),
+            (int(pos.x - radius * 0.80), int(pos.y + radius * 0.42)),
+        )
+        right_guard = (
+            (int(pos.x + radius * 1.02), int(pos.y - radius * 0.08)),
+            (int(pos.x + radius * 0.48), int(pos.y - radius * 0.42)),
+            (int(pos.x + radius * 0.30), int(pos.y + radius * 0.24)),
+            (int(pos.x + radius * 0.80), int(pos.y + radius * 0.42)),
+        )
+        pygame.draw.polygon(self.screen, plate, left_guard)
+        pygame.draw.polygon(self.screen, plate, right_guard)
+        pygame.draw.polygon(self.screen, outline, left_guard, 2)
+        pygame.draw.polygon(self.screen, outline, right_guard, 2)
+
+        mask = pygame.Rect(0, 0, int(radius * 1.38), int(radius * 0.96))
+        mask.center = (int(pos.x), int(pos.y + radius * 0.02))
+        pygame.draw.ellipse(self.screen, plate, mask)
+        pygame.draw.ellipse(self.screen, outline, mask, 2)
+        for direction in (-1, 1):
+            eye = pygame.Rect(0, 0, int(radius * 0.40), int(radius * 0.20))
+            eye.center = (
+                int(pos.x + direction * radius * 0.34),
+                int(pos.y - radius * 0.10),
+            )
+            pygame.draw.line(
+                self.screen,
+                glow,
+                (eye.left, eye.centery + direction),
+                (eye.right, eye.centery - direction * 2),
+                4,
+            )
+            pygame.draw.line(
+                self.screen,
+                outline,
+                (eye.left, eye.centery + direction),
+                (eye.right, eye.centery - direction * 2),
+                2,
+            )
+
+        core = pygame.Rect(0, 0, int(radius * 0.64), int(radius * 0.52))
+        core.center = (int(pos.x), int(pos.y + radius * 0.26))
+        pygame.draw.ellipse(self.screen, outline, core)
+        pygame.draw.ellipse(self.screen, glow, core.inflate(-6, -6))
+        pygame.draw.arc(
+            self.screen,
+            outline,
+            pygame.Rect(
+                int(pos.x - radius * 0.34),
+                int(pos.y + radius * 0.18),
+                int(radius * 0.68),
+                max(10, int(radius * 0.32)),
+            ),
+            0.18,
+            math.pi - 0.18,
+            3,
+        )
+
+    def draw_challenge_boss_avatar(self, enemy: Enemy) -> None:
+        pos = enemy.pos
+        radius = enemy.radius
+        outline = (54, 18, 18)
+        shell = (104, 28, 28)
+        plate = (152, 54, 54)
+        core = config.CHALLENGE_ROOM_COLOR
+        glow = (255, 214, 214)
+        pygame.draw.circle(self.screen, outline, pos, radius + 5)
+        pygame.draw.circle(self.screen, shell, pos, radius + 1)
+
+        spike_dirs = (
+            pygame.Vector2(0, -1),
+            pygame.Vector2(1, 0),
+            pygame.Vector2(0, 1),
+            pygame.Vector2(-1, 0),
+        )
+        for direction in spike_dirs:
+            tangent = pygame.Vector2(-direction.y, direction.x)
+            base = pos + direction * (radius * 0.52)
+            tip = pos + direction * (radius + 13)
+            left = base + tangent * (radius * 0.34)
+            right = base - tangent * (radius * 0.34)
+            pygame.draw.polygon(self.screen, plate, (tip, left, right))
+            pygame.draw.polygon(self.screen, outline, (tip, left, right), 2)
+
+        inner_rect = pygame.Rect(0, 0, int(radius * 1.78), int(radius * 1.52))
+        inner_rect.center = (int(pos.x), int(pos.y))
+        pygame.draw.ellipse(self.screen, core, inner_rect)
+        pygame.draw.ellipse(self.screen, glow, inner_rect.inflate(-10, -16), 2)
+
+        brow_y = pos.y - radius * 0.24
+        eye_dx = radius * 0.44
+        for direction in (-1, 1):
+            eye = pygame.Rect(0, 0, int(radius * 0.46), int(radius * 0.24))
+            eye.center = (int(pos.x + direction * eye_dx), int(brow_y))
+            pygame.draw.line(
+                self.screen,
+                glow,
+                (eye.left, eye.centery + direction),
+                (eye.right, eye.centery - direction * 2),
+                4,
+            )
+            pygame.draw.line(
+                self.screen,
+                outline,
+                (eye.left, eye.centery + direction),
+                (eye.right, eye.centery - direction * 2),
+                2,
+            )
+
+        core_rect = pygame.Rect(0, 0, int(radius * 0.82), int(radius * 0.64))
+        core_rect.center = (int(pos.x), int(pos.y + radius * 0.12))
+        pygame.draw.ellipse(self.screen, outline, core_rect)
+        pygame.draw.ellipse(
+            self.screen,
+            config.ENEMY_LASER_LOCK_COLOR,
+            core_rect.inflate(-8, -6),
+        )
+        pygame.draw.arc(
+            self.screen,
+            outline,
+            pygame.Rect(
+                int(pos.x - radius * 0.42),
+                int(pos.y + radius * 0.12),
+                int(radius * 0.84),
+                max(10, int(radius * 0.40)),
+            ),
+            0.20,
+            math.pi - 0.20,
+            3,
+        )
 
     def draw_mamba_skill_effects(self) -> None:
         if (
@@ -5215,7 +6485,39 @@ class Game:
                             enemy.pos + direction * radius,
                             2,
                         )
-            if enemy.kind != "laser" or enemy.aim_direction.length_squared() <= 0:
+                elif enemy.action_state == "dash_charge":
+                    direction = (
+                        enemy.aim_direction.normalize()
+                        if enemy.aim_direction.length_squared() > 0
+                        else pygame.Vector2(1, 0)
+                    )
+                    dash_length = max(
+                        120,
+                        int(
+                            config.CHALLENGE_BOSS_DASH_SPEED
+                            * config.CHALLENGE_BOSS_DASH_DURATION
+                            * 0.7
+                        ),
+                    )
+                    end = enemy.pos + direction * dash_length
+                    pygame.draw.line(
+                        self.screen,
+                        config.CHALLENGE_ROOM_COLOR,
+                        enemy.pos,
+                        end,
+                        4,
+                    )
+                    pygame.draw.circle(
+                        self.screen,
+                        config.CHALLENGE_ROOM_COLOR,
+                        enemy.pos,
+                        enemy.radius + 10,
+                        3,
+                    )
+            if (
+                not self.enemy_uses_laser_attack(enemy)
+                or enemy.aim_direction.length_squared() <= 0
+            ):
                 continue
             telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
             if not (0 < enemy.shoot_timer <= telegraph_window):
@@ -5370,6 +6672,25 @@ class Game:
                 footer_color = config.MUTED_TEXT if offer.sold else border
                 footer_surf = self.small_font.render(footer_text, True, footer_color)
                 self.screen.blit(footer_surf, footer_surf.get_rect(center=(panel.centerx, panel.bottom - 15)))
+        if room.room_event is not None and room.room_event.key == "nuke" and not room.room_event.completed:
+            center = (
+                room.room_event.anchor.copy()
+                if room.room_event.anchor is not None
+                else pygame.Vector2(self.arena_rect().center)
+            )
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.008)
+            pygame.draw.circle(
+                self.screen,
+                config.NUKE_BORDER_COLOR,
+                center,
+                int(56 + pulse * 10),
+                2,
+            )
+            warning = self.small_font.render("\u6838\u5f39", True, config.NUKE_BORDER_COLOR)
+            self.screen.blit(
+                warning,
+                warning.get_rect(center=(center.x, center.y - 68)),
+            )
         elif room.room_type == "treasure" and not room.chest_opened:
             pos = self.get_room_feature_anchor(room)
             chest = pygame.Rect(0, 0, 68, 48)
@@ -5473,14 +6794,8 @@ class Game:
             else self.player_shield / self.player_max_shield
         )
         xp_ratio = self.xp / self.xp_to_level
-        room_label = self.room_type_label(self.current_room_state.room_type) if self.current_room_state is not None else "\u672a\u8fdb\u5165\u623f\u95f4"
-        room_kind = self.current_room_state.room_type if self.current_room_state is not None else "start"
-        badge_color = {
-            "boss": config.BOSS_COLOR,
-            "elite": config.BULLET_ELITE_COLOR,
-            "shop": config.CREDIT_COLOR,
-            "treasure": config.ITEM_COLOR,
-        }.get(room_kind, config.PLAYER_COLOR)
+        room_label = self.room_display_label(self.current_room_state)
+        badge_color = self.room_badge_color(self.current_room_state)
 
         hud_left = 12
         hud_top = 12
@@ -5545,14 +6860,18 @@ class Game:
         self.screen.blit(self.tiny_font.render(loadout_line, True, config.TEXT_COLOR), (detail_panel.left + 10, detail_panel.top + 7))
 
         detail_text = (
-            f"\u4f24 {int(self.player_damage)} \u00b7 \u66b4 {int(round(self.player_crit_chance * 100))}%"
+            f"\u4f24 {int(self.displayed_player_damage())} \u00b7 \u66b4 {int(round(self.player_crit_chance * 100))}%"
         )
         detail_line = self.fit_text_line(detail_text, self.tiny_font, detail_panel.width - 20)
         self.screen.blit(self.tiny_font.render(detail_line, True, config.MUTED_TEXT), (detail_panel.left + 10, detail_panel.top + 25))
 
         dash_text = "\u5c31\u7eea" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
         skill_text = self.active_skill_status_text()
-        skill_line = self.fit_text_line(f"\u51b2\u523a {dash_text} \u00b7 Q {self.active_skill_label} {skill_text}", self.tiny_font, 210)
+        buff_text = self.active_player_buff_status_text()
+        skill_base = f"\u51b2\u523a {dash_text} \u00b7 Q {self.active_skill_label} {skill_text}"
+        if buff_text:
+            skill_base = f"{skill_base} \u00b7 {buff_text}"
+        skill_line = self.fit_text_line(skill_base, self.tiny_font, 210)
         skills = self.tiny_font.render(skill_line, True, config.MUTED_TEXT)
         self.screen.blit(skills, (12, config.HEIGHT - 26))
         prompt = self.current_interaction_prompt()
@@ -5581,10 +6900,20 @@ class Game:
             y = origin_y + (room.coord[1] - min(ys)) * cell_size
             rect = pygame.Rect(x, y, 16, 16)
             color = (90, 219, 170) if room.visited else (74, 78, 96)
-            if room.room_type == "shop":
+            if room.challenge_tag == "high_difficulty":
+                color = (
+                    config.CHALLENGE_ROOM_COLOR
+                    if room.visited
+                    else (108, 62, 62)
+                )
+            elif room.room_type == "shop":
                 color = config.CREDIT_COLOR if room.visited else (110, 98, 72)
             elif room.room_type == "treasure":
                 color = (255, 180, 88) if room.visited else (104, 86, 66)
+            elif room.room_type == "maze":
+                color = (
+                    config.MAZE_ROOM_COLOR if room.visited else (78, 96, 126)
+                )
             elif room.room_type == "elite":
                 color = (255, 130, 96) if room.visited else (112, 74, 66)
             elif room.room_type == "boss":
@@ -6051,11 +7380,42 @@ class Game:
         pos.x = max(arena.left + radius, min(arena.right - radius, pos.x))
         pos.y = max(arena.top + radius, min(arena.bottom - radius, pos.y))
 
+    def trigger_mamba_revive(self) -> bool:
+        if self.selected_character.key != "mamba" or self.player_revives_remaining <= 0:
+            return False
+        self.player_revives_remaining -= 1
+        self.player_hp = max(1.0, self.player_max_hp * config.MAMBA_REVIVE_HP_RATIO)
+        self.iframes = max(self.iframes, config.MAMBA_REVIVE_IFRAMES)
+        self.add_player_buff("unstoppable", config.MAMBA_REVIVE_BUFF_DURATION)
+        self.spawn_particles(
+            self.player_pos.copy(),
+            config.MAMBA_GLOW_COLOR,
+            18,
+            1.2,
+            (1.6, 4.8),
+            (0.10, 0.24),
+        )
+        self.floaters.append(
+            FloatingText(
+                self.player_pos.copy() + pygame.Vector2(0, -30),
+                "曼巴复燃",
+                config.MAMBA_GLOW_COLOR,
+                1.0,
+            )
+        )
+        self.message = "曼巴奥特原地复活，进入霸体"
+        return True
+
     def damage_player(
         self, amount: float, color: tuple[int, int, int], iframe_duration: float
     ) -> None:
-        self.iframes = iframe_duration
-        remaining = amount
+        if amount <= 0:
+            return
+        damage_multiplier = self.player_damage_taken_multiplier()
+        if damage_multiplier <= 0:
+            return
+        self.iframes = max(self.iframes, iframe_duration)
+        remaining = amount * damage_multiplier
         if self.player_shield > 0:
             absorbed = min(self.player_shield, remaining)
             self.player_shield -= absorbed
@@ -6074,6 +7434,8 @@ class Game:
                 FloatingText(self.player_pos.copy(), f"-{int(remaining)}", color, 0.5)
             )
         if self.player_hp <= 0:
+            if self.trigger_mamba_revive():
+                return
             self.player_hp = 0
             self.update_best_record()
             self.mode = "dead"
@@ -6129,11 +7491,12 @@ class Game:
 
     def move_circle_with_collisions(
         self, pos: pygame.Vector2, radius: int, delta: pygame.Vector2
-    ) -> None:
+    ) -> pygame.Vector2:
+        start = pos.copy()
         if delta.length_squared() <= 0:
             self.clamp_circle_to_arena(pos, radius)
             self.push_circle_out_of_obstacles(pos, radius)
-            return
+            return pos - start
         steps = max(1, int(delta.length() / config.COLLISION_STEP) + 1)
         step = delta / steps
         for _ in range(steps):
@@ -6149,6 +7512,7 @@ class Game:
                     pos.y = trial.y
         self.clamp_circle_to_arena(pos, radius)
         self.push_circle_out_of_obstacles(pos, radius)
+        return pos - start
 
     def position_hits_obstacle(self, pos: pygame.Vector2, radius: int) -> bool:
         return any(

@@ -44,6 +44,7 @@ class Enemy:
     knockback_resist: float = 1.0
     is_boss: bool = False
     kind: str = "grunt"
+    variant: str = ""
     shoot_cooldown: float = 0.0
     shoot_timer: float = 0.0
     aim_direction: pygame.Vector2 = field(default_factory=pygame.Vector2)
@@ -52,6 +53,7 @@ class Enemy:
     special_timer: float = 0.0
     alt_special_timer: float = 0.0
     stun_timer: float = 0.0
+    statuses: list["ActiveEnemyStatus"] = field(default_factory=list)
 
 
 @dataclass
@@ -113,3 +115,22 @@ class GasCloud:
     target_radius: float = 0.0
     growth_speed: float = 0.0
     activation_delay: float = 0.0
+
+
+@dataclass
+class ActivePlayerBuff:
+    key: str
+    duration: float
+    max_duration: float
+    potency: float = 1.0
+
+
+@dataclass
+class ActiveEnemyStatus:
+    key: str
+    duration: float
+    max_duration: float
+    tick_interval: float
+    damage: float
+    color: tuple[int, int, int] = (255, 255, 255)
+    tick_timer: float = 0.0

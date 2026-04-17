@@ -69,10 +69,26 @@ class CharacterProfile:
     pickup_radius_bonus: float = 0.0
     dash_distance_bonus: float = 0.0
     dash_cooldown_mult: float = 1.0
-    pulse_damage_bonus: float = 0.0
+    pulse_push_bonus: float = 0.0
     pulse_cooldown_mult: float = 1.0
     starting_credits: int = 0
     skill_key: str = "pulse"
+
+
+@dataclass(frozen=True)
+class PlayerBuffDefinition:
+    key: str
+    name: str
+    description: str
+    color: tuple[int, int, int]
+    hud_label: str
+    blocks_healing: bool = False
+    damage_taken_multiplier: float = 1.0
+    prevents_stun: bool = False
+    locks_input: bool = False
+    poison_on_hit_duration: float = 0.0
+    poison_on_hit_damage: float = 0.0
+    poison_tick_interval: float = 0.0
 
 
 UPGRADES = (
@@ -92,7 +108,7 @@ UPGRADES = (
     Upgrade("basketball_training", "篮球实习生", "坤坤：篮球速度 +5%，伤害 +2"),
     Upgrade("what_can_i_say", "what can i say", "曼巴重击伤害 +4，眩晕 +0.12 秒"),
     Upgrade("magnet", "废料磁环", "拾取吸附范围 +16"),
-    Upgrade("pulse", "电弧反应堆", "脉冲伤害 +8，冷却 -6%"),
+    Upgrade("pulse", "电弧反应堆", "脉冲持续时间 +0.14 秒，冷却 -6%"),
     Upgrade("dash", "矢量驱动", "冲刺冷却 -7%，移速 +8"),
     Upgrade("enemy_bullet_slow", "迟滞电场", "敌方子弹速度 -12%"),
     Upgrade("credit_boost", "回收协议", "晶片获取 +25%"),
@@ -139,23 +155,23 @@ STAGES = (
 
 CHARACTERS = (
     CharacterOption("vanguard", "先锋机体", "更厚实的前线框架", "生命与护盾更厚，适合正面推进", "pulse"),
-    CharacterOption("mamba", "曼巴奥特", "黄黑突进机体", "移速与冲刺切入更强，擅长贴身重击", "mamba_smash"),
+    CharacterOption("mamba", "曼巴奥特", "黄黑突进机体", "移速与冲刺切入更强，首次死亡会原地复活并获得 5 秒霸体", "mamba_smash"),
     CharacterOption("engineer", "工蜂机体", "偏技能与资源调度的支援框架", "脉冲恢复更快，开局自带晶片", "pulse"),
-    CharacterOption("kunkun", "坤坤", "均衡型表演机体", "血量、速度与护盾都较均衡", "basketball"),
+    CharacterOption("kunkun", "坤坤", "均衡型表演机体", "每持有 1000 晶片伤害 +10%，上限 +30%", "basketball"),
 )
 
 CHARACTER_SKILLS = {
     "pulse": CharacterSkill(
         "pulse",
         "电弧脉冲",
-        "Q：释放脉冲，击退周围敌人",
+        "Q：释放脉冲，清除周围敌方子弹并推开敌人",
         config.PULSE_COOLDOWN,
         "脉冲",
     ),
     "basketball": CharacterSkill(
         "basketball",
         "弹射篮球",
-        "Q：放出无限弹射的篮球，清房后消失",
+        f"Q：放出无限弹射的篮球，清房后消失；长按Q消耗 {config.KUNKUN_BARRAGE_COST} 晶片向八方向齐射，每层限一次",
         config.BASKETBALL_SKILL_COOLDOWN,
         "篮球",
     ),
@@ -182,13 +198,44 @@ CHARACTER_PROFILES = {
         skill_key="mamba_smash",
     ),
     "engineer": CharacterProfile(
-        pulse_damage_bonus=8,
+        pulse_push_bonus=10,
         pulse_cooldown_mult=0.88,
         starting_credits=12,
         skill_key="pulse",
     ),
     "kunkun": CharacterProfile(
         skill_key="basketball",
+    ),
+}
+
+PLAYER_BUFFS = {
+    "radiation": PlayerBuffDefinition(
+        key="radiation",
+        name="辐射",
+        description="50 秒内无法回血，攻击会为敌人附加中毒持续伤害",
+        color=config.RADIATION_COLOR,
+        hud_label="辐射",
+        blocks_healing=True,
+        poison_on_hit_duration=config.RADIATION_POISON_DURATION,
+        poison_on_hit_damage=config.RADIATION_POISON_DAMAGE,
+        poison_tick_interval=config.RADIATION_POISON_TICK,
+    ),
+    "unstoppable": PlayerBuffDefinition(
+        key="unstoppable",
+        name="霸体",
+        description="免疫伤害与眩晕",
+        color=config.MAMBA_GLOW_COLOR,
+        hud_label="霸体",
+        damage_taken_multiplier=0.0,
+        prevents_stun=True,
+    ),
+    "stunned": PlayerBuffDefinition(
+        key="stunned",
+        name="眩晕",
+        description="暂时无法移动、射击和使用技能",
+        color=config.CHALLENGE_ROOM_COLOR,
+        hud_label="眩晕",
+        locks_input=True,
     ),
 }
 

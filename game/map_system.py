@@ -6,6 +6,7 @@ import random
 
 import pygame
 
+from . import config
 from .balance import hazard_profile
 
 Cell = tuple[int, int]
@@ -62,6 +63,8 @@ class RoomObstacle:
 class RoomLayout:
     name: str
     theme: str
+    family: str
+    grid_size: tuple[int, int]
     obstacles: list[RoomObstacle]
     doorways: list[pygame.Rect]
     chambers: dict[Cell, Chamber]
@@ -72,6 +75,7 @@ class RoomLayout:
     pickup_cells: tuple[Cell, ...]
     screen_doors: dict[str, pygame.Rect]
     door_entries: dict[str, pygame.Vector2]
+    centerpiece: str | None = None
 
     def closest_cell(self, pos: pygame.Vector2) -> Cell | None:
         if not self.chambers:
@@ -444,6 +448,8 @@ def build_stitched_layout(
     return RoomLayout(
         name=template["name"],
         theme=theme,
+        family=template["family"],
+        grid_size=template["grid"],
         obstacles=obstacles,
         doorways=doorways,
         chambers=chambers,
@@ -452,6 +458,83 @@ def build_stitched_layout(
         player_spawn=chambers[spawn_cell].center.copy(),
         enemy_cells=enemy_cells,
         pickup_cells=tuple(used_cells),
+        screen_doors=screen_doors,
+        door_entries=door_entries,
+        centerpiece=template.get("centerpiece"),
+    )
+
+
+def build_maze_room_layout(
+    arena: pygame.Rect,
+    room_index: int,
+    rng: random.Random,
+    door_dirs: tuple[str, ...] | list[str] | None = None,
+) -> RoomLayout:
+    door_dirs = tuple(door_dirs or ())
+    theme = _choose_room_theme(room_index, rng)
+    screen_doors, door_entries = _build_screen_doors(arena, door_dirs)
+    tile = max(config.PLAYER_RADIUS * 2 + 18, 50)
+    cols = _fit_odd_grid_count(arena.width - 2, tile, 15, 23)
+    rows = _fit_odd_grid_count(arena.height - 24, tile, 9, 11)
+    bounds = pygame.Rect(0, 0, cols * tile, rows * tile)
+    bounds.center = arena.center
+
+    grid = [[1 for _ in range(cols)] for _ in range(rows)]
+    start_col = _nearest_odd_index(cols // 2, 1, cols - 2)
+    start_row = _nearest_odd_index(rows // 2, 1, rows - 2)
+    _carve_maze_grid(grid, rng, start_col, start_row)
+
+    openings: dict[str, tuple[int, int]] = {}
+    for direction in door_dirs:
+        if direction in {"north", "south"}:
+            target = screen_doors[direction].centerx
+            col = _nearest_odd_index(
+                int(round((target - bounds.left - tile * 0.5) / tile)),
+                1,
+                cols - 2,
+            )
+            boundary_row = 0 if direction == "north" else rows - 1
+            inner_row = 1 if direction == "north" else rows - 2
+            grid[boundary_row][col] = 0
+            grid[inner_row][col] = 0
+            opening_left = bounds.left + col * tile
+            openings[direction] = (opening_left, opening_left + tile)
+        else:
+            target = screen_doors[direction].centery
+            row = _nearest_odd_index(
+                int(round((target - bounds.top - tile * 0.5) / tile)),
+                1,
+                rows - 2,
+            )
+            boundary_col = 0 if direction == "west" else cols - 1
+            inner_col = 1 if direction == "west" else cols - 2
+            grid[row][boundary_col] = 0
+            grid[row][inner_col] = 0
+            opening_top = bounds.top + row * tile
+            openings[direction] = (opening_top, opening_top + tile)
+
+    obstacles = _maze_wall_obstacles(bounds, grid, tile)
+    obstacles.extend(_maze_margin_walls(arena, bounds, openings))
+    chamber_rect = bounds.inflate(-16, -16)
+    chamber = Chamber(
+        cell=(0, 0),
+        rect=chamber_rect,
+        center=pygame.Vector2(chamber_rect.center),
+    )
+    player_spawn = _maze_cell_center(bounds, start_col, start_row, tile)
+    return RoomLayout(
+        name="迷宫锁区",
+        theme=theme,
+        family="maze",
+        grid_size=(cols, rows),
+        obstacles=obstacles,
+        doorways=[],
+        chambers={(0, 0): chamber},
+        links={(0, 0): ()},
+        door_centers={},
+        player_spawn=player_spawn,
+        enemy_cells=((0, 0),),
+        pickup_cells=((0, 0),),
         screen_doors=screen_doors,
         door_entries=door_entries,
     )
@@ -470,6 +553,14 @@ def build_floor_map(arena: pygame.Rect, floor_index: int, base_difficulty: int, 
 
     coord_to_id = {coord: idx + 1 for idx, coord in enumerate(room_types)}
     distances = _distance_map(main_path, branches)
+    maze_candidates = [
+        coord
+        for coord, room_type in room_types.items()
+        if room_type == "combat" and distances.get(coord, 0) >= 2
+    ]
+    if maze_candidates and rng.random() < config.MAZE_ROOM_CHANCE:
+        branch_candidates = [coord for coord in maze_candidates if coord in branches]
+        room_types[rng.choice(branch_candidates or maze_candidates)] = "maze"
     rooms: dict[int, FloorRoom] = {}
     for coord, room_type in room_types.items():
         room_id = coord_to_id[coord]
@@ -483,7 +574,14 @@ def build_floor_map(arena: pygame.Rect, floor_index: int, base_difficulty: int, 
             difficulty += 1
         elif room_type == "boss":
             difficulty += 2
-        layout = build_stitched_layout(arena, difficulty + floor_index, rng, tuple(neighbors))
+        if room_type == "maze":
+            layout = build_maze_room_layout(
+                arena, difficulty + floor_index, rng, tuple(neighbors)
+            )
+        else:
+            layout = build_stitched_layout(
+                arena, difficulty + floor_index, rng, tuple(neighbors)
+            )
         rooms[room_id] = FloorRoom(
             room_id=room_id,
             coord=coord,
@@ -498,6 +596,155 @@ def build_floor_map(arena: pygame.Rect, floor_index: int, base_difficulty: int, 
 def _split_edges(start: int, end: int, parts: int) -> list[int]:
     length = end - start
     return [start + round(length * idx / parts) for idx in range(parts + 1)]
+
+
+def _fit_odd_grid_count(length: int, tile: int, min_count: int, max_count: int) -> int:
+    count = max(min_count, min(max_count, max(1, length // max(1, tile))))
+    if count % 2 == 0:
+        count -= 1
+    return max(min_count, count)
+
+
+def _nearest_odd_index(value: int, lower: int, upper: int) -> int:
+    clamped = max(lower, min(upper, value))
+    if clamped % 2 == 1:
+        return clamped
+    options = [
+        candidate
+        for candidate in (clamped - 1, clamped + 1)
+        if lower <= candidate <= upper and candidate % 2 == 1
+    ]
+    if options:
+        return min(options, key=lambda candidate: abs(candidate - value))
+    return lower if lower % 2 == 1 else lower + 1
+
+
+def _carve_maze_grid(
+    grid: list[list[int]], rng: random.Random, start_col: int, start_row: int
+) -> None:
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+    stack = [(start_col, start_row)]
+    grid[start_row][start_col] = 0
+    while stack:
+        col, row = stack[-1]
+        options: list[tuple[int, int, int, int]] = []
+        for dx, dy in ((0, -2), (2, 0), (0, 2), (-2, 0)):
+            nxt_col = col + dx
+            nxt_row = row + dy
+            if not (1 <= nxt_col < cols - 1 and 1 <= nxt_row < rows - 1):
+                continue
+            if grid[nxt_row][nxt_col] == 0:
+                continue
+            options.append((nxt_col, nxt_row, col + dx // 2, row + dy // 2))
+        if not options:
+            stack.pop()
+            continue
+        nxt_col, nxt_row, wall_col, wall_row = rng.choice(options)
+        grid[wall_row][wall_col] = 0
+        grid[nxt_row][nxt_col] = 0
+        stack.append((nxt_col, nxt_row))
+
+
+def _maze_cell_center(
+    bounds: pygame.Rect, col: int, row: int, tile: int
+) -> pygame.Vector2:
+    return pygame.Vector2(
+        bounds.left + col * tile + tile / 2,
+        bounds.top + row * tile + tile / 2,
+    )
+
+
+def _maze_wall_obstacles(
+    bounds: pygame.Rect, grid: list[list[int]], tile: int
+) -> list[RoomObstacle]:
+    obstacles: list[RoomObstacle] = []
+    for row, row_cells in enumerate(grid):
+        col = 0
+        while col < len(row_cells):
+            if row_cells[col] == 0:
+                col += 1
+                continue
+            start = col
+            while col < len(row_cells) and row_cells[col] != 0:
+                col += 1
+            rect = pygame.Rect(
+                bounds.left + start * tile,
+                bounds.top + row * tile,
+                (col - start) * tile,
+                tile,
+            )
+            obstacles.append(_make_obstacle(rect, False, 0.0, "wall"))
+    return obstacles
+
+
+def _maze_margin_walls(
+    arena: pygame.Rect,
+    bounds: pygame.Rect,
+    openings: dict[str, tuple[int, int]],
+) -> list[RoomObstacle]:
+    obstacles: list[RoomObstacle] = []
+
+    def append_rect(rect: pygame.Rect) -> None:
+        if rect.width > 0 and rect.height > 0:
+            obstacles.append(_make_obstacle(rect, False, 0.0, "wall"))
+
+    if bounds.top > arena.top:
+        north = openings.get("north")
+        if north is None:
+            append_rect(
+                pygame.Rect(arena.left, arena.top, arena.width, bounds.top - arena.top)
+            )
+        else:
+            append_rect(
+                pygame.Rect(arena.left, arena.top, max(0, north[0] - arena.left), bounds.top - arena.top)
+            )
+            append_rect(
+                pygame.Rect(north[1], arena.top, max(0, arena.right - north[1]), bounds.top - arena.top)
+            )
+
+    if bounds.bottom < arena.bottom:
+        south = openings.get("south")
+        if south is None:
+            append_rect(
+                pygame.Rect(arena.left, bounds.bottom, arena.width, arena.bottom - bounds.bottom)
+            )
+        else:
+            append_rect(
+                pygame.Rect(arena.left, bounds.bottom, max(0, south[0] - arena.left), arena.bottom - bounds.bottom)
+            )
+            append_rect(
+                pygame.Rect(south[1], bounds.bottom, max(0, arena.right - south[1]), arena.bottom - bounds.bottom)
+            )
+
+    if bounds.left > arena.left:
+        west = openings.get("west")
+        if west is None:
+            append_rect(
+                pygame.Rect(arena.left, arena.top, bounds.left - arena.left, arena.height)
+            )
+        else:
+            append_rect(
+                pygame.Rect(arena.left, arena.top, bounds.left - arena.left, max(0, west[0] - arena.top))
+            )
+            append_rect(
+                pygame.Rect(arena.left, west[1], bounds.left - arena.left, max(0, arena.bottom - west[1]))
+            )
+
+    if bounds.right < arena.right:
+        east = openings.get("east")
+        if east is None:
+            append_rect(
+                pygame.Rect(bounds.right, arena.top, arena.right - bounds.right, arena.height)
+            )
+        else:
+            append_rect(
+                pygame.Rect(bounds.right, arena.top, arena.right - bounds.right, max(0, east[0] - arena.top))
+            )
+            append_rect(
+                pygame.Rect(bounds.right, east[1], arena.right - bounds.right, max(0, arena.bottom - east[1]))
+            )
+    return obstacles
 
 
 def _append_wall_split_vertical(
@@ -693,16 +940,12 @@ def _choose_layout_template(room_index: int, door_count: int, rng: random.Random
     grids_22 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 2)]
     grids_23 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 3)]
     rings = [template for template in LAYOUT_TEMPLATES if template.get("centerpiece") == "ring"]
-    mazes = [template for template in LAYOUT_TEMPLATES if template["family"] == "maze"]
-
     if room_index <= 2:
         pool = [*singles, *lines_12, *grids_22[:2]]
     elif door_count >= 3:
         pool = [*grids_22, *lines_12, *grids_23, *lines_13, *rings]
     elif room_index >= 7:
         pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
-        if mazes and rng.random() < 0.16:
-            pool.extend(mazes)
     else:
         pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
     return rng.choice(pool)

@@ -22,6 +22,15 @@ class HazardProfile:
     ttl: float
 
 
+@dataclass(frozen=True)
+class NukeEventProfile:
+    chance: float
+    hp: float
+    player_damage: float
+    enemy_damage: float
+    cloud_count: int
+
+
 SHOP_OFFER_POOL = (
     ShopOfferTemplate("repair", "纳米修复", "回复 40 生命", 18),
     ShopOfferTemplate("shield_charge", "护盾电池", "回复 30 护盾", 20),
@@ -40,6 +49,10 @@ SHOP_OFFER_POOL = (
     ShopOfferTemplate("credit_boost", "回收协议", "晶片获取 +25%", 30),
     ShopOfferTemplate("ricochet", "折射弹仓", "攻击增加 1 次反射", 34),
 )
+
+CREDIT_DROP_BASE_MULTIPLIER = 0.70
+ENEMY_FLOOR_CREDIT_DROP_STEP = 0.05
+ENEMY_FLOOR_CREDIT_DROP_CAP = 0.50
 
 
 def floor_damage_adjustment(floor_index: int) -> float:
@@ -67,10 +80,39 @@ def enemy_scaling(room_index: int, floor_index: int) -> tuple[float, float, floa
     return hp_scale, damage_scale, speed_bonus
 
 
+def nuke_event_profile(room_index: int, floor_index: int) -> NukeEventProfile:
+    floor_value = max(1, floor_index)
+    room_value = max(1, room_index)
+    chance = min(0.36, (0.03 + (floor_value - 1) * 0.017) * 2.0)
+    hp = 190.0 + room_value * 26.0 + (floor_value - 1) * 18.0
+    player_damage = min(92.0, 82.0 + (floor_value - 1) * 1.5)
+    enemy_damage = min(176.0, 118.0 + room_value * 5.0 + (floor_value - 1) * 6.0)
+    cloud_count = min(7, 3 + floor_value // 2)
+    return NukeEventProfile(
+        chance=chance,
+        hp=hp,
+        player_damage=player_damage,
+        enemy_damage=enemy_damage,
+        cloud_count=cloud_count,
+    )
+
+
 def scale_shop_cost(base_cost: int, floor_index: int, difficulty: int) -> int:
-    floor_markup = max(0, floor_index - 1) * 0.16
-    difficulty_markup = max(0, difficulty - 1) * 0.02
+    floor_markup = max(0, floor_index - 1) * 0.22
+    difficulty_markup = max(0, difficulty - 1) * 0.03
     return int(math.ceil(base_cost * (1.0 + floor_markup + difficulty_markup)))
+
+
+def scale_credit_amount(amount: int, multiplier: float) -> int:
+    return max(1, int(round(amount * multiplier)))
+
+
+def enemy_floor_credit_multiplier(floor_index: int) -> float:
+    floor_penalty = min(
+        ENEMY_FLOOR_CREDIT_DROP_CAP,
+        max(0, floor_index - 1) * ENEMY_FLOOR_CREDIT_DROP_STEP,
+    )
+    return 1.0 - floor_penalty
 
 
 def enemy_attack_cooldown(kind: str, room_index: int, floor_index: int) -> float:
@@ -96,17 +138,22 @@ def enemy_credit_drop(room_index: int, floor_index: int, kind: str) -> int:
         amount += 2
     elif kind == "boss":
         amount += 4
-    return amount
+    multiplier = CREDIT_DROP_BASE_MULTIPLIER * enemy_floor_credit_multiplier(
+        floor_index
+    )
+    return scale_credit_amount(amount, multiplier)
 
 
 def obstacle_credit_drop(room_index: int, floor_index: int) -> int:
-    return 4 + room_index // 5 + max(0, floor_index - 1)
+    amount = 4 + room_index // 5 + max(0, floor_index - 1)
+    return scale_credit_amount(amount, CREDIT_DROP_BASE_MULTIPLIER)
 
 
 def reward_credit_drop(floor_index: int, reward_type: str) -> int:
+    amount = 10 + max(0, floor_index - 1) * 3
     if reward_type == "boss":
-        return 18 + max(0, floor_index - 1) * 4
-    return 10 + max(0, floor_index - 1) * 3
+        amount = 18 + max(0, floor_index - 1) * 4
+    return scale_credit_amount(amount, CREDIT_DROP_BASE_MULTIPLIER)
 
 
 def hazard_profile(tag: str, rect: pygame.Rect) -> HazardProfile:

@@ -7,6 +7,7 @@ import pygame
 
 GridCell = tuple[int, int]
 CARDINAL_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+DIAGONAL_DIRECTIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
 def circle_intersects_rect(pos: pygame.Vector2, radius: int, rect: pygame.Rect) -> bool:
@@ -46,6 +47,16 @@ class NavigationField:
             for dx, dy in CARDINAL_DIRECTIONS:
                 nxt = (cell[0] + dx, cell[1] + dy)
                 if nxt in self.walkable:
+                    next_cells.append(nxt)
+            for dx, dy in DIAGONAL_DIRECTIONS:
+                nxt = (cell[0] + dx, cell[1] + dy)
+                side_x = (cell[0] + dx, cell[1])
+                side_y = (cell[0], cell[1] + dy)
+                if (
+                    nxt in self.walkable
+                    and side_x in self.walkable
+                    and side_y in self.walkable
+                ):
                     next_cells.append(nxt)
             self.neighbors[cell] = tuple(next_cells)
 
@@ -125,5 +136,23 @@ class NavigationField:
                 best_neighbor = nxt
                 best_distance = distance
         if best_neighbor is None:
-            return goal.copy()
-        return self.walkable[best_neighbor].copy()
+            return self.walkable[start_cell].copy()
+        lookahead = best_neighbor
+        lookahead_distance = best_distance
+        for _ in range(2):
+            next_options = [
+                nxt
+                for nxt in self.neighbors.get(lookahead, ())
+                if self.distances.get(nxt, lookahead_distance) < lookahead_distance
+            ]
+            if not next_options:
+                break
+            lookahead = min(
+                next_options,
+                key=lambda cell: (
+                    self.distances.get(cell, 10**9),
+                    self.walkable[cell].distance_squared_to(goal),
+                ),
+            )
+            lookahead_distance = self.distances.get(lookahead, lookahead_distance)
+        return self.walkable[lookahead].copy()
