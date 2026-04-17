@@ -29,14 +29,15 @@ SHOP_OFFER_POOL = (
     ShopOfferTemplate("damage", "火力扩容", "武器伤害 +12%", 30),
     ShopOfferTemplate("rapid", "枪机校准", "射击冷却 -6%", 26),
     ShopOfferTemplate("accuracy", "瞄具微调", "子弹偏移 -18%，准度提升", 28),
-    ShopOfferTemplate("shotgun_range", "加长枪膛", "仅霰弹枪：飞行距离增加，扩散略微收束", 28),
+    ShopOfferTemplate("shotgun_range", "加长枪膛", "子弹距离增加，扩散略微收束", 28),
+    ShopOfferTemplate("basketball_training", "篮球实习生", "坤坤：篮球速度上升，伤害小幅提高", 28),
     ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +6%", 30),
     ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +18%", 32),
-    ShopOfferTemplate("speed", "动力靴组", "移动速度 +16", 24),
+    ShopOfferTemplate("speed", "动力靴组", "移动速度 +18", 24),
     ShopOfferTemplate("magnet", "磁环模组", "拾取范围 +16", 22),
     ShopOfferTemplate("enemy_bullet_slow", "迟滞电场", "敌方子弹速度 -12%", 28),
     ShopOfferTemplate("credit_boost", "回收协议", "晶片获取 +25%", 30),
-    ShopOfferTemplate("ricochet", "折射弹仓", "攻击获得 1 次反射；激光最多可叠加至 3 次", 34),
+    ShopOfferTemplate("ricochet", "折射弹仓", "攻击增加 1 次反射", 34),
 )
 
 

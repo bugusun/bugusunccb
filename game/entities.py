@@ -21,6 +21,14 @@ class Bullet:
     crit: bool = False
     hits_all: bool = False
     decay_visual: bool = False
+    style: str = "bullet"
+    explosion_radius: float = 0.0
+    explosion_color: tuple[int, int, int] = (255, 255, 255)
+    explosion_knockback: float = 0.0
+    trail_color: tuple[int, int, int] | None = None
+    trail_interval: float = 0.0
+    trail_timer: float = 0.0
+    expires_on_room_clear: bool = False
 
 
 @dataclass

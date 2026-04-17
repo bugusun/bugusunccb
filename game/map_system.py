@@ -194,6 +194,22 @@ LAYOUT_TEMPLATES = (
         "links": (((0, 0), (1, 0)), ((0, 1), (1, 1)), ((0, 0), (0, 1))),
     },
     {
+        "name": "\u7eb5\u5217\u4e95\u9053",
+        "family": "grid",
+        "grid": (1, 2),
+        "spawn": (0, 0),
+        "cells": ((0, 0), (0, 1)),
+        "links": (((0, 0), (0, 1)),),
+    },
+    {
+        "name": "\u4e0a\u4e0b\u8054\u9501",
+        "family": "grid",
+        "grid": (1, 2),
+        "spawn": (0, 1),
+        "cells": ((0, 0), (0, 1)),
+        "links": (((0, 0), (0, 1)),),
+    },
+    {
         "name": "\u516d\u683c\u8054\u52a8",
         "family": "grid",
         "grid": (2, 3),
@@ -216,6 +232,31 @@ LAYOUT_TEMPLATES = (
         "spawn": (0, 0),
         "cells": ((0, 0), (1, 0), (1, 1), (0, 1), (0, 2), (1, 2)),
         "links": (((0, 0), (1, 0)), ((1, 0), (1, 1)), ((1, 1), (0, 1)), ((0, 1), (0, 2)), ((0, 2), (1, 2))),
+    },
+    {
+        "name": "\u957f\u5eca\u63a8\u8fdb",
+        "family": "grid",
+        "grid": (1, 3),
+        "spawn": (0, 0),
+        "cells": ((0, 0), (0, 1), (0, 2)),
+        "links": (((0, 0), (0, 1)), ((0, 1), (0, 2))),
+    },
+    {
+        "name": "\u4e09\u6bb5\u5347\u964d",
+        "family": "grid",
+        "grid": (1, 3),
+        "spawn": (0, 1),
+        "cells": ((0, 0), (0, 1), (0, 2)),
+        "links": (((0, 0), (0, 1)), ((0, 1), (0, 2))),
+    },
+    {
+        "name": "\u73af\u5899\u4e2d\u5ead",
+        "family": "single",
+        "grid": (1, 1),
+        "spawn": (0, 0),
+        "cells": ((0, 0),),
+        "links": (),
+        "centerpiece": "ring",
     },
     {
         "name": "\u8ff7\u5bab\u56de\u8def",
@@ -375,11 +416,15 @@ def build_stitched_layout(
                         )
                     )
 
-    for cell in _select_feature_cells(template, room_index, theme, rng):
-        chamber = chambers[cell]
-        for obstacle in _make_cover_set(chamber, theme, rng, room_index, template["family"]):
-            if chamber.rect.inflate(-18, -18).contains(obstacle.rect):
-                obstacles.append(obstacle)
+    if template.get("centerpiece") == "ring":
+        ring_chamber = chambers[template["spawn"]]
+        obstacles.extend(_make_ring_wall_set(ring_chamber))
+    else:
+        for cell in _select_feature_cells(template, room_index, theme, rng):
+            chamber = chambers[cell]
+            for obstacle in _make_cover_set(chamber, theme, rng, room_index, template["family"]):
+                if chamber.rect.inflate(-18, -18).contains(obstacle.rect):
+                    obstacles.append(obstacle)
 
     links: dict[Cell, list[Cell]] = {cell: [] for cell in used_cells}
     for a, b in template["links"]:
@@ -642,14 +687,24 @@ def _distance_map(main_path: list[GridPos], branches: dict[GridPos, str]) -> dic
 
 
 def _choose_layout_template(room_index: int, door_count: int, rng: random.Random) -> dict:
+    singles = [template for template in LAYOUT_TEMPLATES if template["grid"] == (1, 1) and template.get("centerpiece") != "ring"]
+    lines_12 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (1, 2)]
+    lines_13 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (1, 3)]
+    grids_22 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 2)]
+    grids_23 = [template for template in LAYOUT_TEMPLATES if template["grid"] == (2, 3)]
+    rings = [template for template in LAYOUT_TEMPLATES if template.get("centerpiece") == "ring"]
+    mazes = [template for template in LAYOUT_TEMPLATES if template["family"] == "maze"]
+
     if room_index <= 2:
-        pool = LAYOUT_TEMPLATES[:4]
+        pool = [*singles, *lines_12, *grids_22[:2]]
     elif door_count >= 3:
-        pool = (LAYOUT_TEMPLATES[1], LAYOUT_TEMPLATES[3], LAYOUT_TEMPLATES[4], LAYOUT_TEMPLATES[6])
+        pool = [*grids_22, *lines_12, *grids_23, *lines_13, *rings]
     elif room_index >= 7:
-        pool = (LAYOUT_TEMPLATES[0], LAYOUT_TEMPLATES[4], LAYOUT_TEMPLATES[5], LAYOUT_TEMPLATES[6])
+        pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
+        if mazes and rng.random() < 0.16:
+            pool.extend(mazes)
     else:
-        pool = LAYOUT_TEMPLATES
+        pool = [*singles, *lines_12, *lines_13, *grids_22, *grids_23, *rings]
     return rng.choice(pool)
 
 
@@ -695,8 +750,10 @@ def _select_feature_cells(template: dict, room_index: int, theme: str, rng: rand
         budget = 1 if room_index <= 3 else 2
     elif family == "maze":
         budget = 3 if room_index <= 4 else 4
-    elif template["grid"] == (2, 3):
+    elif template["grid"] in {(2, 3), (1, 3)}:
         budget = 3
+    elif template["grid"] == (1, 2):
+        budget = 2
     else:
         budget = 2 if room_index <= 3 else 3
     if theme == "\u63a9\u4f53\u5de5\u5e26":
@@ -768,6 +825,32 @@ def _wall_row(rect: pygame.Rect, horizontal: bool, destructible: bool, hp: float
     else:
         wall = pygame.Rect(rect.centerx - 10, rect.top + 24, 20, rect.height - 48)
     return _make_obstacle(wall, destructible, hp, "wall")
+
+
+def _make_ring_wall_set(chamber: Chamber) -> list[RoomObstacle]:
+    size = int(min(chamber.rect.width, chamber.rect.height) * 0.52)
+    size = max(132, size)
+    thickness = 14
+    gap = max(52, int(size * 0.24))
+    outer = pygame.Rect(0, 0, size, size)
+    outer.center = chamber.rect.center
+
+    segments = [
+        pygame.Rect(outer.left, outer.top, max(12, size // 2 - gap // 2), thickness),
+        pygame.Rect(outer.centerx + gap // 2, outer.top, max(12, outer.right - (outer.centerx + gap // 2)), thickness),
+        pygame.Rect(outer.left, outer.bottom - thickness, max(12, size // 2 - gap // 2), thickness),
+        pygame.Rect(outer.centerx + gap // 2, outer.bottom - thickness, max(12, outer.right - (outer.centerx + gap // 2)), thickness),
+        pygame.Rect(outer.left, outer.top, thickness, max(12, size // 2 - gap // 2)),
+        pygame.Rect(outer.left, outer.centery + gap // 2, thickness, max(12, outer.bottom - (outer.centery + gap // 2))),
+        pygame.Rect(outer.right - thickness, outer.top, thickness, max(12, size // 2 - gap // 2)),
+        pygame.Rect(outer.right - thickness, outer.centery + gap // 2, thickness, max(12, outer.bottom - (outer.centery + gap // 2))),
+    ]
+    inset = chamber.rect.inflate(-28, -28)
+    return [
+        _make_obstacle(segment.clip(inset), False, 0.0, "wall")
+        for segment in segments
+        if segment.width > 0 and segment.height > 0 and inset.contains(segment.clip(inset))
+    ]
 
 
 def _crate_row(rect: pygame.Rect, count: int, hp: float, *, offset: int = 0, tag: str = "crate") -> list[RoomObstacle]:

@@ -23,6 +23,8 @@ from .balance import (
 )
 from .content import (
     CHARACTERS,
+    CHARACTER_PROFILES,
+    CHARACTER_SKILLS,
     STAGES,
     SUPPLY_OPTIONS,
     TITLE_PANEL_INFO,
@@ -34,6 +36,8 @@ from .content import (
     UPGRADE_WEAPON_RULES,
     WEAPON_TAGS,
     CharacterOption,
+    CharacterProfile,
+    CharacterSkill,
     StageOption,
     SupplyOption,
     Upgrade,
@@ -150,6 +154,8 @@ class Game:
         self.player_projectile_ttl = 1.5
         self.player_projectile_radius = config.BULLET_RADIUS
         self.player_projectile_knockback = config.PROJECTILE_BASE_KNOCKBACK
+        self.player_rocket_explosion_radius = 0.0
+        self.player_rocket_explosion_knockback = 0.0
         self.player_shotgun_pellets = 1
         self.player_shotgun_spread = 0.0
         self.pickup_radius = 72.0
@@ -163,7 +169,13 @@ class Game:
         self.pulse_damage = float(config.PULSE_DAMAGE)
         self.pulse_radius = float(config.PULSE_RADIUS)
         self.pulse_cooldown = float(config.PULSE_COOLDOWN)
-        self.pulse_timer = 0.0
+        self.basketball_damage = float(config.BASKETBALL_DAMAGE)
+        self.basketball_speed_scale = float(config.BASKETBALL_SPEED_SCALE)
+        self.basketball_upgrade_level = 0
+        self.active_skill_key = "pulse"
+        self.skill_timer = 0.0
+        self.active_skill_name = "电弧脉冲"
+        self.active_skill_label = "脉冲"
         self.iframes = 0.0
         self.last_move = pygame.Vector2(1, 0)
 
@@ -183,6 +195,11 @@ class Game:
         self.floor_map: FloorMap | None = None
         self.room_states: dict[int, RoomState] = {}
         self.navigation_fields: dict[int, NavigationField] = {}
+        self.enemy_pause_timer = 0.0
+        self.floor_entry_enemy_grace_pending = False
+        self.screen_shake_timer = 0.0
+        self.screen_shake_total = 0.0
+        self.screen_shake_strength = 0.0
 
         self.bullets: list[Bullet] = []
         self.enemies: list[Enemy] = []
@@ -204,7 +221,7 @@ class Game:
         self.reward_choices: list[Upgrade] = []
         self.supply_choices: list[SupplyOption] = list(SUPPLY_OPTIONS)
         self.current_score = 0
-        self.message = "选择关卡、机体与武器，准备下潜钢铁蜂巢"
+        self.message = "完成配置后开始下潜"
         self.title_panel_scroll = 0.0
         self.title_panel_scroll_target = 0.0
 
@@ -451,21 +468,62 @@ class Game:
         self.open_title_panel("main")
         self.build_floor()
 
+    def character_profile(self, character_key: str | None = None) -> CharacterProfile:
+        key = self.selected_character.key if character_key is None else character_key
+        return CHARACTER_PROFILES.get(key, CharacterProfile())
+
+    def character_skill_data(self, skill_key: str | None = None) -> CharacterSkill:
+        key = self.active_skill_key if skill_key is None else skill_key
+        return CHARACTER_SKILLS.get(key, CHARACTER_SKILLS["pulse"])
+
+    def active_skill_cooldown(self) -> float:
+        if self.active_skill_key == "pulse":
+            return self.pulse_cooldown
+        return self.character_skill_data().cooldown
+
+    def basketball_projectile_speed(self) -> float:
+        return config.BULLET_SPEED * self.basketball_speed_scale
+
+    def basketball_upgrade_cap_reached(self) -> bool:
+        return self.basketball_upgrade_level >= config.BASKETBALL_UPGRADE_CAP
+
+    def configure_character_skill(self, skill_key: str) -> None:
+        skill = self.character_skill_data(skill_key)
+        self.active_skill_key = skill.key
+        self.active_skill_name = skill.name
+        self.active_skill_label = skill.hud_label
+
+    def active_skill_handler(self):
+        return {
+            "pulse": self.try_pulse,
+            "basketball": self.try_basketball_skill,
+        }.get(self.active_skill_key)
+
+    def active_skill_status_text(self) -> str:
+        return "\u5c31\u7eea" if self.skill_timer <= 0 else f"{self.skill_timer:.1f}s"
+
+    def selected_character_skill_summary(self, character: CharacterOption | None = None) -> str:
+        current = self.selected_character if character is None else character
+        skill = self.character_skill_data(current.skill_key)
+        return f"技能：{skill.description}"
+
+    def selected_character_detail_text(self) -> str:
+        return f"{self.selected_character.passive}；{self.selected_character_skill_summary()}"
+
     def apply_selected_loadout(self) -> None:
-        if self.selected_character.key == "vanguard":
-            self.player_max_hp += 18
-            self.player_hp = self.player_max_hp
-            self.player_max_shield += 18
-            self.player_shield = min(self.player_max_shield, self.player_shield + 18)
-            self.dash_cooldown *= 0.96
-        elif self.selected_character.key == "ranger":
-            self.player_speed += 28
-            self.pickup_radius += 30
-            self.dash_distance += 16
-        elif self.selected_character.key == "engineer":
-            self.pulse_cooldown *= 0.88
-            self.pulse_damage += 8
-            self.credits += 12
+        profile = self.character_profile()
+        self.player_max_hp += profile.hp_bonus
+        self.player_hp = self.player_max_hp
+        self.player_max_shield += profile.shield_bonus
+        self.player_shield = min(self.player_max_shield, self.player_shield + profile.shield_bonus)
+        self.player_speed += profile.speed_bonus
+        self.pickup_radius += profile.pickup_radius_bonus
+        self.dash_distance += profile.dash_distance_bonus
+        self.dash_cooldown *= profile.dash_cooldown_mult
+        self.pulse_cooldown *= profile.pulse_cooldown_mult
+        self.pulse_damage += profile.pulse_damage_bonus
+        self.credits += profile.starting_credits
+        self.configure_character_skill(profile.skill_key)
 
         self.weapon_mode = "projectile"
         self.player_beam_width = 10
@@ -474,6 +532,8 @@ class Game:
         self.player_projectile_ttl = 1.5
         self.player_projectile_radius = config.BULLET_RADIUS
         self.player_projectile_knockback = config.PROJECTILE_BASE_KNOCKBACK
+        self.player_rocket_explosion_radius = 0.0
+        self.player_rocket_explosion_knockback = 0.0
         self.player_shotgun_pellets = 1
         self.player_shotgun_spread = 0.0
         self.player_spread = 0.018
@@ -496,6 +556,18 @@ class Game:
                 config.BULLET_SPEED * config.RAIL_PROJECTILE_SPEED_SCALE
             )
             self.player_projectile_ttl = 1.8
+        elif self.selected_weapon.key == "rocket":
+            self.player_damage = config.ROCKET_DAMAGE
+            self.fire_cooldown = config.ROCKET_FIRE_COOLDOWN
+            self.player_spread = 0.012
+            self.player_crit_chance = 0.12
+            self.player_crit_multiplier = 2.15
+            self.player_projectile_speed = config.BULLET_SPEED * config.ROCKET_PROJECTILE_SPEED_SCALE
+            self.player_projectile_ttl = config.ROCKET_PROJECTILE_TTL
+            self.player_projectile_radius = config.ROCKET_PROJECTILE_RADIUS
+            self.player_projectile_knockback = 0.0
+            self.player_rocket_explosion_radius = config.ROCKET_EXPLOSION_RADIUS
+            self.player_rocket_explosion_knockback = config.ROCKET_EXPLOSION_KNOCKBACK
         elif self.selected_weapon.key == "shotgun":
             self.player_damage = 7.0
             self.fire_cooldown = 0.54
@@ -534,6 +606,9 @@ class Game:
     def is_shotgun_weapon(self) -> bool:
         return "shotgun" in self.active_weapon_tags()
 
+    def is_rocket_weapon(self) -> bool:
+        return self.selected_weapon.key == "rocket"
+
     def active_weapon_keys(self) -> tuple[str, ...]:
         return (self.selected_weapon.key,)
 
@@ -548,6 +623,8 @@ class Game:
 
     def supports_upgrade(self, upgrade_key: str) -> bool:
         active_keys = set(self.active_weapon_keys())
+        active_character_key = self.selected_character.key
+        active_skill_key = self.active_skill_key
         allowed_weapons = WEAPON_EXCLUSIVE_UPGRADES.get(upgrade_key)
         if allowed_weapons is not None and not active_keys.intersection(
             allowed_weapons
@@ -567,6 +644,10 @@ class Game:
             rule.required_weapon_tags
         ):
             return False
+        if rule.required_character_keys and active_character_key not in rule.required_character_keys:
+            return False
+        if rule.required_skill_keys and active_skill_key not in rule.required_skill_keys:
+            return False
         return True
 
     def multishot_cap(self) -> int:
@@ -575,20 +656,19 @@ class Game:
     def shotgun_range_cap_reached(self) -> bool:
         return self.player_projectile_ttl >= config.SHOTGUN_RANGE_CAP
 
+    def rocket_blast_cap_reached(self) -> bool:
+        return self.player_rocket_explosion_radius >= config.ROCKET_EXPLOSION_RADIUS_CAP - 0.01
+
     def is_upgrade_available(self, upgrade_key: str) -> bool:
         if not self.supports_upgrade(upgrade_key):
             return False
         return not (
             (upgrade_key == "multishot" and self.multishot >= self.multishot_cap())
-            or (
-                upgrade_key == "ricochet"
-                and self.player_bullet_bounces >= self.ricochet_cap()
-            )
+            or (upgrade_key == "ricochet" and self.player_bullet_bounces >= self.ricochet_cap())
+            or (upgrade_key == "basketball_training" and self.basketball_upgrade_cap_reached())
             or (upgrade_key == "accuracy" and self.player_spread <= 0.004)
-            or (
-                upgrade_key == "shotgun_range"
-                and (not self.is_shotgun_weapon() or self.shotgun_range_cap_reached())
-            )
+            or (upgrade_key == "shotgun_range" and (not self.is_shotgun_weapon() or self.shotgun_range_cap_reached()))
+            or (upgrade_key == "rocket_blast" and (not self.is_rocket_weapon() or self.rocket_blast_cap_reached()))
             or (upgrade_key == "crit_rate" and self.player_crit_chance >= 0.45)
             or (upgrade_key == "crit_damage" and self.player_crit_multiplier >= 2.85)
             or (
@@ -634,6 +714,8 @@ class Game:
         self.explosion_waves.clear()
         self.floaters.clear()
         self.invalidate_navigation_fields()
+        self.enemy_pause_timer = 0.0
+        self.floor_entry_enemy_grace_pending = True
         self.message = f"进入第 {self.floor_index} 层"
         if self.floor_map is None:
             return
@@ -723,13 +805,21 @@ class Game:
         room_state.encounter_spawned = True
         room_state.resolved = False
         room_state.doors_locked = True
+        spawn_min_distance = max(180.0, config.NEW_ROOM_ENEMY_SPAWN_DISTANCE)
+        self.enemy_pause_timer = max(self.enemy_pause_timer, config.NEW_ROOM_ENEMY_GRACE)
+        if self.floor_entry_enemy_grace_pending:
+            spawn_min_distance = max(spawn_min_distance, config.NEW_FLOOR_ENEMY_SPAWN_DISTANCE)
+            self.enemy_pause_timer = max(self.enemy_pause_timer, config.NEW_FLOOR_ENEMY_GRACE)
+            self.floor_entry_enemy_grace_pending = False
         self.spawn_room_pickups(arena)
-        self.populate_room_enemies(room_state, arena)
-        self.message = (
-            f"第 {self.floor_index} 层 · {self.room_type_label(room_state.room_type)}"
-        )
+        self.populate_room_enemies(room_state, arena, spawn_min_distance)
+        room_label = self.room_type_label(room_state.room_type)
+        if self.enemy_pause_timer > 0:
+            self.message = f"第 {self.floor_index} 层 · {room_label}（缓冲）"
+        else:
+            self.message = f"第 {self.floor_index} 层 · {room_label}"
 
-    def populate_room_enemies(self, room_state: RoomState, arena: pygame.Rect) -> None:
+    def populate_room_enemies(self, room_state: RoomState, arena: pygame.Rect, min_distance: float = 180.0) -> None:
         room_state.enemies.clear()
         theme = room_state.layout.theme
         shooter_cap = 1 if room_state.difficulty <= 5 else 2
@@ -743,10 +833,10 @@ class Game:
             elif theme == "封锁壁垒":
                 count = max(4, count - 1)
             for _ in range(count):
-                enemy = self.make_enemy(arena)
+                enemy = self.make_enemy(arena, min_distance=min_distance)
                 shooter_count = self.limit_shooter(enemy, shooter_count, shooter_cap)
                 room_state.enemies.append(enemy)
-            self.inject_theme_enemies(room_state, arena)
+            self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
             return
 
         if room_state.room_type == "elite":
@@ -754,30 +844,30 @@ class Game:
             if theme == "废料堆场":
                 count += 1
             for idx in range(count):
-                enemy = self.make_enemy(arena)
+                enemy = self.make_enemy(arena, min_distance=min_distance)
                 if idx < 2:
                     self.promote_elite_enemy(enemy)
                 shooter_count = self.limit_shooter(
                     enemy, shooter_count, max(1, shooter_cap)
                 )
                 room_state.enemies.append(enemy)
-            self.inject_theme_enemies(room_state, arena)
+            self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
             return
 
         if room_state.room_type == "boss":
-            room_state.enemies.append(self.make_boss(arena))
+            room_state.enemies.append(self.make_boss(arena, min_distance=max(220.0, min_distance)))
             add_count = 2 + max(0, room_state.difficulty // 3)
             if theme == "封锁壁垒":
                 add_count += 1
             for idx in range(add_count):
-                enemy = self.make_enemy(arena)
+                enemy = self.make_enemy(arena, min_distance=min_distance)
                 if idx == 0 and enemy.kind == "grunt":
                     self.promote_elite_enemy(enemy)
                 shooter_count = self.limit_shooter(
                     enemy, shooter_count, max(1, shooter_cap)
                 )
                 room_state.enemies.append(enemy)
-            self.inject_theme_enemies(room_state, arena)
+            self.inject_theme_enemies(room_state, arena, min_distance=min_distance)
 
     def themed_enemy_kind(self, theme: str) -> str | None:
         if theme == "废料堆场":
@@ -795,20 +885,18 @@ class Game:
             return 1
         return 1 if room_state.room_type == "combat" else 0
 
-    def make_theme_enemy(self, arena: pygame.Rect, kind: str) -> Enemy:
+    def make_theme_enemy(self, arena: pygame.Rect, kind: str, min_distance: float = 180.0) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
             pos = self.random_free_position(
                 arena,
                 config.ENEMY_RADIUS + 10,
                 allowed_cells=self.room_layout.enemy_cells,
-                min_distance=180,
+                min_distance=min_distance,
             )
         else:
-            pos = self.random_free_position(arena, config.ENEMY_RADIUS + 10)
-        hp_scale, damage_scale, speed_bonus = enemy_scaling(
-            self.room_index, self.floor_index
-        )
-        base_speed = config.ENEMY_SPEED + speed_bonus
+            pos = self.random_free_position(arena, config.ENEMY_RADIUS + 10, min_distance=min_distance)
+        hp_scale, damage_scale, speed_bonus = enemy_scaling(self.room_index, self.floor_index)
+        base_speed = (config.ENEMY_SPEED + speed_bonus) * config.ENEMY_GLOBAL_SPEED_SCALE
         damage = config.ENEMY_TOUCH_DAMAGE * damage_scale
         xp_reward = 10 + self.room_index // 2 + max(0, self.floor_index - 1)
         if kind == "toxic_bloater":
@@ -837,7 +925,7 @@ class Game:
             kind=kind,
         )
 
-    def inject_theme_enemies(self, room_state: RoomState, arena: pygame.Rect) -> None:
+    def inject_theme_enemies(self, room_state: RoomState, arena: pygame.Rect, min_distance: float = 180.0) -> None:
         special_kind = self.themed_enemy_kind(room_state.layout.theme)
         special_count = self.themed_enemy_count(room_state)
         if special_kind is None or special_count <= 0 or not room_state.enemies:
@@ -858,7 +946,7 @@ class Game:
         candidate_indices = preferred + fallback
         for idx in candidate_indices[:special_count]:
             anchor = room_state.enemies[idx].pos.copy()
-            themed_enemy = self.make_theme_enemy(arena, special_kind)
+            themed_enemy = self.make_theme_enemy(arena, special_kind, min_distance=min_distance)
             themed_enemy.pos = anchor
             room_state.enemies[idx] = themed_enemy
 
@@ -1131,14 +1219,50 @@ class Game:
 
         return points[:count]
 
+    def build_shop_offer_positions(self, layout: RoomLayout, count: int) -> list[pygame.Vector2]:
+        arena = self.arena_rect()
+        center = pygame.Vector2(arena.center)
+        wide = min(240.0, arena.width * 0.23)
+        narrow = min(150.0, arena.width * 0.14)
+        top_y = arena.centery - 104
+        bottom_y = arena.centery + 44
+        candidates = [
+            pygame.Vector2(center.x - narrow, top_y),
+            pygame.Vector2(center.x + narrow, top_y),
+            pygame.Vector2(center.x - wide, bottom_y),
+            pygame.Vector2(center.x, bottom_y),
+            pygame.Vector2(center.x + wide, bottom_y),
+        ]
+        points: list[pygame.Vector2] = []
+        for candidate in candidates:
+            if not self.is_safe_feature_position(candidate, layout.obstacles, 58):
+                continue
+            if any(candidate.distance_to(existing) < 120 for existing in points):
+                continue
+            points.append(candidate)
+            if len(points) >= count:
+                return points
+
+        for candidate in self.get_room_feature_points(layout, count, collision_radius=48):
+            if any(candidate.distance_to(existing) < 110 for existing in points):
+                continue
+            points.append(candidate.copy())
+            if len(points) >= count:
+                break
+        return points[:count]
+
     def build_shop_offers(self, layout: RoomLayout, difficulty: int) -> list[ShopOffer]:
+        guaranteed_keys = ("repair", "shield_charge")
+        template_by_key = {offer.key: offer for offer in SHOP_OFFER_POOL}
+        guaranteed = [template_by_key[key] for key in guaranteed_keys if key in template_by_key]
         pool = [
             offer
             for offer in SHOP_OFFER_POOL
-            if offer.key not in UPGRADE_KEYS or self.is_upgrade_available(offer.key)
+            if offer.key not in guaranteed_keys and (offer.key not in UPGRADE_KEYS or self.is_upgrade_available(offer.key))
         ]
-        picks = self.rng.sample(pool if len(pool) >= 3 else list(SHOP_OFFER_POOL), 3)
-        positions = self.get_room_feature_points(layout, 3)
+        self.rng.shuffle(pool)
+        picks = [*guaranteed, *pool[:3]]
+        positions = self.build_shop_offer_positions(layout, len(picks))
         return [
             ShopOffer(
                 key=offer.key,
@@ -1157,23 +1281,21 @@ class Game:
         pool = filtered if len(filtered) >= count else filtered
         return self.rng.sample(pool, count)
 
-    def make_enemy(self, arena: pygame.Rect) -> Enemy:
+    def make_enemy(self, arena: pygame.Rect, min_distance: float = 180.0) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
             pos = self.random_free_position(
                 arena,
                 config.ENEMY_RADIUS + 8,
                 allowed_cells=self.room_layout.enemy_cells,
-                min_distance=180,
+                min_distance=min_distance,
             )
         else:
-            pos = self.random_free_position(arena, config.ENEMY_RADIUS + 8)
-        hp_scale, damage_scale, speed_bonus = enemy_scaling(
-            self.room_index, self.floor_index
-        )
+            pos = self.random_free_position(arena, config.ENEMY_RADIUS + 8, min_distance=min_distance)
+        hp_scale, damage_scale, speed_bonus = enemy_scaling(self.room_index, self.floor_index)
         roll = self.rng.random()
         kind = "grunt"
         color = config.ENEMY_COLOR
-        speed = config.ENEMY_SPEED + speed_bonus
+        speed = (config.ENEMY_SPEED + speed_bonus) * config.ENEMY_GLOBAL_SPEED_SCALE
         damage = config.ENEMY_TOUCH_DAMAGE * damage_scale
         xp_reward = 8 + self.room_index // 2 + max(0, self.floor_index - 1)
         radius = config.ENEMY_RADIUS
@@ -1251,14 +1373,13 @@ class Game:
             shoot_timer=self.rng.random() * shoot_cooldown if shoot_cooldown else 0.0,
         )
 
-    def make_boss(self, arena: pygame.Rect) -> Enemy:
+    def make_boss(self, arena: pygame.Rect, min_distance: float = 220.0) -> Enemy:
         if self.room_layout is not None and self.room_layout.enemy_cells:
             pos = self.random_free_position(
                 arena,
                 config.BOSS_RADIUS + 10,
-                allowed_cells=list(self.room_layout.enemy_cells[:2])
-                or list(self.room_layout.enemy_cells),
-                min_distance=220,
+                allowed_cells=list(self.room_layout.enemy_cells[:2]) or list(self.room_layout.enemy_cells),
+                min_distance=min_distance,
             )
         else:
             pos = pygame.Vector2(arena.centerx, arena.top + 70)
@@ -1270,7 +1391,7 @@ class Game:
             pos=pos,
             hp=max_hp,
             max_hp=max_hp,
-            speed=config.BOSS_SPEED + speed_bonus * 0.35,
+            speed=(config.BOSS_SPEED + speed_bonus * 0.35) * config.ENEMY_GLOBAL_SPEED_SCALE,
             radius=config.BOSS_RADIUS,
             damage=config.ENEMY_TOUCH_DAMAGE * 1.2 * damage_scale,
             xp_reward=50 + self.room_index * 3,
@@ -1313,7 +1434,7 @@ class Game:
         elif upgrade.key == "crit_damage":
             self.player_crit_multiplier = min(2.85, self.player_crit_multiplier + 0.18)
         elif upgrade.key == "speed":
-            self.player_speed += 16
+            self.player_speed += config.SPEED_UPGRADE_BONUS
         elif upgrade.key == "max_hp":
             self.player_max_hp += 12
             self.player_hp = min(self.player_max_hp, self.player_hp + 12)
@@ -1349,11 +1470,29 @@ class Game:
                 )
             else:
                 applied_name = f"{upgrade.name}（当前武器不可用）"
+        elif upgrade.key == "rocket_blast":
+            if self.is_rocket_weapon() and not self.rocket_blast_cap_reached():
+                self.player_rocket_explosion_radius = min(
+                    config.ROCKET_EXPLOSION_RADIUS_CAP,
+                    self.player_rocket_explosion_radius + config.ROCKET_EXPLOSION_RADIUS_STEP,
+                )
+            else:
+                applied_name = f"{upgrade.name}（当前武器不可用）"
+        elif upgrade.key == "basketball_training":
+            if self.active_skill_key == "basketball" and not self.basketball_upgrade_cap_reached():
+                self.basketball_upgrade_level += 1
+                self.basketball_damage += config.BASKETBALL_UPGRADE_DAMAGE_STEP
+                self.basketball_speed_scale += config.BASKETBALL_UPGRADE_SPEED_STEP
+            else:
+                applied_name = f"{upgrade.name}（当前技能不可用）"
         elif upgrade.key == "magnet":
             self.pickup_radius += 16
         elif upgrade.key == "pulse":
-            self.pulse_damage += 8
-            self.pulse_cooldown = max(4.8, self.pulse_cooldown * 0.94)
+            if self.active_skill_key == "pulse":
+                self.pulse_damage += 8
+                self.pulse_cooldown = max(4.8, self.pulse_cooldown * 0.94)
+            else:
+                applied_name = f"{upgrade.name}（当前技能不可用）"
         elif upgrade.key == "dash":
             self.dash_cooldown = max(1.0, self.dash_cooldown * 0.93)
             self.player_speed += 8
@@ -1369,7 +1508,10 @@ class Game:
             else:
                 applied_name = f"{upgrade.name}（已达上限）"
         elif upgrade.key == "pulse_radius":
-            self.pulse_radius += 22
+            if self.active_skill_key == "pulse":
+                self.pulse_radius += 22
+            else:
+                applied_name = f"{upgrade.name}（当前技能不可用）"
         self.mode = "playing"
         self.message = f"已获得 {applied_name}"
         return applied_name
@@ -1389,19 +1531,41 @@ class Game:
             self.player_hp = min(self.player_max_hp, self.player_hp + 40)
         elif option.key == "overclock":
             self.player_damage += 4
-            self.pulse_timer = 0.0
+            self.skill_timer = 0.0
         elif option.key == "charge":
             self.dash_timer = 0.0
-            self.pulse_timer = 0.0
-        self.floaters.append(
-            FloatingText(self.player_pos.copy(), option.name, config.PLAYER_COLOR, 0.8)
-        )
+            self.skill_timer = 0.0
+        self.floaters.append(FloatingText(self.player_pos.copy(), option.name, config.PLAYER_COLOR, 0.8))
         self.mode = "playing"
         self.message = f"已获得 {option.name}"
 
     def get_choice_rects(self) -> list[pygame.Rect]:
-        start_x = 180
-        return [pygame.Rect(start_x + idx * 310, 220, 260, 200) for idx in range(3)]
+        card_width = 248
+        card_height = 188
+        gap = 24
+        total_width = card_width * 3 + gap * 2
+        start_x = (config.WIDTH - total_width) // 2
+        top = 222
+        return [pygame.Rect(start_x + idx * (card_width + gap), top, card_width, card_height) for idx in range(3)]
+
+    def add_screen_shake(self, strength: float, duration: float) -> None:
+        if strength <= 0 or duration <= 0:
+            return
+        self.screen_shake_strength = max(self.screen_shake_strength, strength)
+        self.screen_shake_timer = max(self.screen_shake_timer, duration)
+        self.screen_shake_total = max(self.screen_shake_total, duration)
+
+    def update_screen_shake(self, dt: float) -> None:
+        if self.screen_shake_timer <= 0:
+            self.screen_shake_timer = 0.0
+            self.screen_shake_total = 0.0
+            self.screen_shake_strength = 0.0
+            return
+        self.screen_shake_timer = max(0.0, self.screen_shake_timer - dt)
+        if self.screen_shake_timer <= 0:
+            self.screen_shake_timer = 0.0
+            self.screen_shake_total = 0.0
+            self.screen_shake_strength = 0.0
 
     def get_stage_rects(self) -> list[pygame.Rect]:
         return [pygame.Rect(44, 136 + idx * 54, 338, 44) for idx in range(len(STAGES))]
@@ -1422,21 +1586,9 @@ class Game:
 
     def title_detail_sections(self) -> tuple[tuple[str, str, str], ...]:
         return (
-            (
-                "\u4efb\u52a1\u7b80\u4ecb",
-                self.selected_stage.name,
-                self.selected_stage.description,
-            ),
-            (
-                "\u5f53\u524d\u673a\u4f53",
-                self.selected_character.name,
-                self.selected_character.passive,
-            ),
-            (
-                "\u5f53\u524d\u6b66\u5668",
-                self.selected_weapon.name,
-                self.selected_weapon.passive,
-            ),
+            ("\u4efb\u52a1\u7b80\u4ecb", self.selected_stage.name, self.selected_stage.description),
+            ("\u5f53\u524d\u673a\u4f53", self.selected_character.name, self.selected_character_detail_text()),
+            ("\u5f53\u524d\u6b66\u5668", self.selected_weapon.name, self.selected_weapon.passive),
         )
 
     def apply_obstacle_damage(self, obstacle: RoomObstacle, damage: float) -> bool:
@@ -1517,8 +1669,11 @@ class Game:
         color: tuple[int, int, int],
         *,
         source: RoomObstacle | None = None,
+        affect_player: bool = True,
+        enemy_knockback: float = 0.0,
+        wave_ttl: float = 0.42,
     ) -> None:
-        self.spawn_explosion_wave(center, radius, color)
+        self.spawn_explosion_wave(center, radius, color, ttl=wave_ttl)
         for enemy in self.enemies[:]:
             distance = enemy.pos.distance_to(center)
             if distance > radius + enemy.radius:
@@ -1526,17 +1681,20 @@ class Game:
             falloff = max(0.46, 1.0 - distance / max(1.0, radius + enemy.radius))
             dealt = damage * falloff
             enemy.hp -= dealt
-            self.floaters.append(
-                FloatingText(enemy.pos.copy(), str(int(dealt)), color, 0.35)
-            )
+            if enemy_knockback > 0:
+                push_dir = enemy.pos - center
+                if push_dir.length_squared() <= 0:
+                    push_dir = pygame.Vector2(self.rng.uniform(-1.0, 1.0), self.rng.uniform(-1.0, 1.0))
+                if push_dir.length_squared() > 0:
+                    push = push_dir.normalize() * (enemy_knockback * falloff / enemy.knockback_resist)
+                    self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+            self.floaters.append(FloatingText(enemy.pos.copy(), str(int(dealt)), color, 0.35))
             if enemy.hp <= 0:
                 self.kill_enemy(enemy)
 
         player_distance = self.player_pos.distance_to(center)
-        if player_distance <= radius + config.PLAYER_RADIUS and self.iframes <= 0:
-            falloff = max(
-                0.46, 1.0 - player_distance / max(1.0, radius + config.PLAYER_RADIUS)
-            )
+        if affect_player and player_distance <= radius + config.PLAYER_RADIUS and self.iframes <= 0:
+            falloff = max(0.46, 1.0 - player_distance / max(1.0, radius + config.PLAYER_RADIUS))
             self.damage_player(damage * falloff, color, 0.22)
 
         obstacle_damage = max(12.0, damage * 1.75)
@@ -1691,14 +1849,14 @@ class Game:
 
     def title_panel_uses_scroll(self, panel: str | None = None) -> bool:
         panel_key = self.title_panel if panel is None else panel
-        return panel_key == "weapon"
+        return panel_key in {"character", "weapon"}
 
     def title_panel_card_height(self, panel: str | None = None) -> int:
         panel_key = self.title_panel if panel is None else panel
         if panel_key == "weapon":
             return 104
         if panel_key == "character":
-            return 86
+            return 112
         return 82
 
     def title_panel_gap(self, panel: str | None = None) -> int:
@@ -2001,7 +2159,7 @@ class Game:
                 elif self.mode == "playing" and event.key == pygame.K_SPACE:
                     self.try_dash()
                 elif self.mode == "playing" and event.key == pygame.K_q:
-                    self.try_pulse()
+                    self.try_use_active_skill()
                 elif self.mode == "playing" and event.key == pygame.K_e:
                     self.handle_interaction()
                 elif self.mode == "level_up":
@@ -2060,7 +2218,7 @@ class Game:
             portal_pos = self.get_room_feature_anchor(room)
             if self.player_pos.distance_to(portal_pos) <= 76:
                 self.mode = "floor_confirm"
-                self.message = f"确认前往第 {self.floor_index + 1} 层"
+                self.message = f"确认进入第 {self.floor_index + 1} 层"
                 self.play_sound("ui_click")
 
     def get_nearby_shop_offer(self) -> ShopOffer | None:
@@ -2068,7 +2226,7 @@ class Game:
         if room is None or room.room_type != "shop":
             return None
         for offer in room.shop_offers:
-            if self.player_pos.distance_to(offer.pos) <= 62:
+            if self.player_pos.distance_to(offer.pos) <= 72:
                 return offer
         return None
 
@@ -2103,6 +2261,7 @@ class Game:
             return
         room.resolved = True
         room.doors_locked = False
+        self.clear_room_bound_projectiles()
         self.room_clear_delay = 0.0
         self.room_transition_cooldown = 0.35
         self.rooms_cleared += 1
@@ -2193,13 +2352,13 @@ class Game:
                     offer.key
                 ):
                     return f"{offer.name}（已达上限）"
-                return f"E 购买 {offer.name} - {offer.cost} 晶片"
+                return f"E 购买 {offer.name}（{offer.cost}）"
         elif room.room_type == "treasure" and not room.chest_opened:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 70:
-                return "E 打开宝箱"
+                return "E 开启宝箱"
         elif room.room_type == "boss" and room.exit_active:
             if self.player_pos.distance_to(self.get_room_feature_anchor(room)) <= 76:
-                return "E 启动下层传送"
+                return "E 进入下层"
         return ""
 
     def check_door_transition(self) -> None:
@@ -2253,6 +2412,7 @@ class Game:
             self.mode = "playing"
 
     def update(self, dt: float) -> None:
+        self.update_screen_shake(dt)
         if self.mode == "floor_transition":
             self.update_floor_transition(dt)
             return
@@ -2264,11 +2424,13 @@ class Game:
         self.iframes = max(0.0, self.iframes - dt)
         self.fire_timer = max(0.0, self.fire_timer - dt)
         self.dash_timer = max(0.0, self.dash_timer - dt)
-        self.pulse_timer = max(0.0, self.pulse_timer - dt)
+        self.skill_timer = max(0.0, self.skill_timer - dt)
         self.room_transition_cooldown = max(0.0, self.room_transition_cooldown - dt)
+        self.enemy_pause_timer = max(0.0, self.enemy_pause_timer - dt)
         self.update_player(dt)
         self.update_bullets(dt)
-        self.update_enemies(dt)
+        if self.enemy_pause_timer <= 0:
+            self.update_enemies(dt)
         self.update_pickups(dt)
         self.update_gas_clouds(dt)
         self.update_explosion_waves(dt)
@@ -2281,6 +2443,7 @@ class Game:
             and self.current_room_state.doors_locked
             and not self.enemies
         ):
+            self.clear_room_bound_projectiles()
             self.room_clear_delay += dt
             if self.room_clear_delay >= config.ROOM_CLEAR_FORCE_COLLECT_DELAY:
                 self.absorb_all_pickups()
@@ -2337,11 +2500,19 @@ class Game:
             FloatingText(self.player_pos.copy(), "冲刺", config.PLAYER_COLOR, 0.35)
         )
 
-    def try_pulse(self) -> None:
-        if self.pulse_timer > 0:
+    def try_use_active_skill(self) -> None:
+        if self.skill_timer > 0:
             return
-        self.pulse_timer = self.pulse_cooldown
-        self.play_sound("pulse_wave")
+        handler = self.active_skill_handler()
+        if handler is not None:
+            handler()
+            return
+        self.message = f"{self.active_skill_name} \u6682\u4e0d\u53ef\u7528"
+
+    def try_pulse(self) -> None:
+        if self.skill_timer > 0:
+            return
+        self.skill_timer = self.active_skill_cooldown()
         hits = 0
         for enemy in self.enemies[:]:
             dist = enemy.pos.distance_to(self.player_pos)
@@ -2373,6 +2544,35 @@ class Game:
                 0.6,
             )
         )
+
+    def try_basketball_skill(self) -> None:
+        if self.skill_timer > 0:
+            return
+        aim = pygame.Vector2(pygame.mouse.get_pos()) - self.player_pos
+        if aim.length_squared() <= 0:
+            aim = self.last_move if self.last_move.length_squared() > 0 else pygame.Vector2(1, 0)
+        direction = aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
+        self.skill_timer = self.active_skill_cooldown()
+        spawn_pos = self.player_pos.copy() + direction * (config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2)
+        self.spawn_projectile(
+            spawn_pos,
+            direction,
+            self.basketball_damage,
+            speed=self.basketball_projectile_speed(),
+            ttl=config.BASKETBALL_TTL,
+            radius=config.BASKETBALL_RADIUS,
+            pierce=0,
+            bounces_left=-1,
+            friendly=True,
+            color=config.BASKETBALL_COLOR,
+            knockback=config.BASKETBALL_KNOCKBACK,
+            style="basketball",
+            trail_color=config.BASKETBALL_TRAIL_COLOR,
+            trail_interval=config.BASKETBALL_TRAIL_INTERVAL,
+            expires_on_room_clear=True,
+        )
+        self.spawn_particles(spawn_pos.copy(), config.BASKETBALL_COLOR, 8, 0.92, (1.6, 3.8), (0.12, 0.24))
+        self.floaters.append(FloatingText(self.player_pos.copy(), "篮球出手", config.BASKETBALL_COLOR, 0.45))
 
     def update_laser_traces(self, dt: float) -> None:
         remaining: list[LaserTrace] = []
@@ -2627,6 +2827,13 @@ class Game:
         hits_all: bool = False,
         decay_visual: bool = False,
         knockback: float = config.PROJECTILE_BASE_KNOCKBACK,
+        style: str = "bullet",
+        explosion_radius: float = 0.0,
+        explosion_color: tuple[int, int, int] | None = None,
+        explosion_knockback: float = 0.0,
+        trail_color: tuple[int, int, int] | None = None,
+        trail_interval: float = 0.0,
+        expires_on_room_clear: bool = False,
     ) -> None:
         if direction.length_squared() <= 0:
             return
@@ -2646,10 +2853,92 @@ class Game:
                 crit=crit,
                 hits_all=hits_all,
                 decay_visual=decay_visual,
+                style=style,
+                explosion_radius=explosion_radius,
+                explosion_color=color if explosion_color is None else explosion_color,
+                explosion_knockback=explosion_knockback,
+                trail_color=trail_color,
+                trail_interval=trail_interval,
+                trail_timer=trail_interval,
+                expires_on_room_clear=expires_on_room_clear,
             )
         )
 
+    def clear_room_bound_projectiles(self) -> None:
+        if not self.bullets:
+            return
+        remaining: list[Bullet] = []
+        for bullet in self.bullets:
+            if not bullet.expires_on_room_clear:
+                remaining.append(bullet)
+                continue
+            self.spawn_particles(bullet.pos.copy(), bullet.color, 5, 0.44, (1.4, 2.8), (0.08, 0.18))
+        self.bullets = remaining
+
+    def bullet_can_bounce(self, bullet: Bullet) -> bool:
+        return bullet.friendly and (bullet.style == "basketball" or bullet.bounces_left > 0)
+
+    def update_bullet_trail(self, bullet: Bullet, dt: float) -> None:
+        if bullet.trail_color is None or bullet.trail_interval <= 0:
+            return
+        bullet.trail_timer -= dt
+        while bullet.trail_timer <= 0:
+            if bullet.style == "rocket":
+                self.spawn_particles(bullet.pos.copy(), bullet.trail_color, 2, 0.52, (1.2, 2.8), (0.16, 0.28))
+            else:
+                self.spawn_particles(bullet.pos.copy(), bullet.trail_color, 1, 0.42, (1.1, 2.2), (0.10, 0.20))
+            bullet.trail_timer += bullet.trail_interval
+
+    def bounce_bullet_from_enemy(
+        self,
+        bullet: Bullet,
+        enemy_pos: pygame.Vector2,
+        enemy_radius: int,
+        normal: pygame.Vector2 | None = None,
+    ) -> None:
+        bounce_normal = pygame.Vector2() if normal is None else normal.copy()
+        if bounce_normal.length_squared() <= 0:
+            bounce_normal = bullet.pos - enemy_pos
+        if bounce_normal.length_squared() <= 0:
+            bounce_normal = -bullet.velocity if bullet.velocity.length_squared() > 0 else pygame.Vector2(1, 0)
+        bounce_normal = bounce_normal.normalize()
+        reflected = self.reflect_direction(bullet.velocity, bounce_normal)
+        if reflected.length_squared() <= 0:
+            reflected = bounce_normal
+        speed = bullet.velocity.length()
+        if speed <= 0:
+            speed = self.basketball_projectile_speed()
+        bullet.velocity = reflected * speed
+        bullet.pos = enemy_pos + bounce_normal * (enemy_radius + bullet.radius + 2)
+        self.clamp_circle_to_arena(bullet.pos, bullet.radius)
+        self.register_bullet_bounce(bullet)
+
+    def explode_rocket(self, bullet: Bullet, impact_pos: pygame.Vector2 | None = None) -> None:
+        center = bullet.pos.copy() if impact_pos is None else impact_pos.copy()
+        self.clamp_circle_to_arena(center, max(2, bullet.radius))
+        burst_color = config.CRIT_COLOR if bullet.crit else (bullet.explosion_color or config.ROCKET_EXPLOSION_COLOR)
+        self.spawn_particles(center.copy(), burst_color, 24, 1.75, (2.4, 6.6), (0.18, 0.54))
+        self.spawn_particles(center.copy(), config.ROCKET_SHOCKWAVE_COLOR, 12, 1.15, (1.8, 4.2), (0.14, 0.36))
+        self.spawn_particles(center.copy(), config.ROCKET_SMOKE_COLOR, 10, 0.82, (2.6, 5.4), (0.24, 0.58))
+        self.spawn_explosion_wave(center, bullet.explosion_radius * 0.62, config.ROCKET_SHOCKWAVE_COLOR, ttl=0.20)
+        self.apply_explosion_damage(
+            center,
+            bullet.explosion_radius,
+            bullet.damage,
+            burst_color,
+            affect_player=False,
+            enemy_knockback=bullet.explosion_knockback,
+            wave_ttl=0.34,
+        )
+        self.add_screen_shake(config.ROCKET_SCREEN_SHAKE, config.ROCKET_SCREEN_SHAKE_DURATION)
+
     def extra_multishot_angles(self) -> list[float]:
+        if self.selected_weapon.key == "rail":
+            angles: list[float] = []
+            for idx in range(self.multishot):
+                base = 0.10 + idx * 0.05
+                angles.extend([-base, base])
+            return angles
         angles: list[float] = []
         for idx in range(self.multishot):
             lane = idx // 2
@@ -2657,6 +2946,9 @@ class Game:
             side = 1 if (self.shot_serial + idx) % 2 == 0 else -1
             angles.append(side * base)
         return angles
+
+    def current_multishot_lane_count(self) -> int:
+        return len(self.extra_multishot_angles())
 
     def player_projectile_angles(self) -> list[float]:
         if not self.is_shotgun_weapon():
@@ -2840,11 +3132,37 @@ class Game:
                     (0.08, 0.18),
                 )
             return
-        projectile_color = (
-            config.SHOTGUN_PELLET_COLOR
-            if self.is_shotgun_weapon()
-            else config.BULLET_COLOR
-        )
+        if self.is_rocket_weapon():
+            fired = self.apply_projectile_offset(direction)
+            muzzle = self.player_pos.copy() + fired * 18
+            damage, crit = self.roll_player_hit(self.player_damage)
+            self.spawn_projectile(
+                muzzle,
+                fired,
+                damage,
+                speed=self.player_projectile_speed,
+                ttl=self.player_projectile_ttl,
+                radius=self.player_projectile_radius,
+                pierce=0,
+                bounces_left=0,
+                friendly=True,
+                color=config.ROCKET_COLOR,
+                crit=crit,
+                knockback=0.0,
+                style="rocket",
+                explosion_radius=self.player_rocket_explosion_radius,
+                explosion_color=config.ROCKET_EXPLOSION_COLOR,
+                explosion_knockback=self.player_rocket_explosion_knockback,
+                trail_color=config.ROCKET_SMOKE_COLOR,
+                trail_interval=config.ROCKET_TRAIL_INTERVAL,
+            )
+            self.spawn_particles(muzzle.copy(), config.ROCKET_EXPLOSION_COLOR, 9, 1.35, (2.2, 5.0), (0.12, 0.30))
+            self.spawn_particles(muzzle.copy() - fired * 6, config.ROCKET_SMOKE_COLOR, 6, 0.72, (1.8, 4.0), (0.18, 0.34))
+            recoil = fired * -10
+            self.move_circle_with_collisions(self.player_pos, config.PLAYER_RADIUS, recoil)
+            self.shot_serial += 1
+            return
+        projectile_color = config.SHOTGUN_PELLET_COLOR if self.is_shotgun_weapon() else config.BULLET_COLOR
         for angle in self.player_projectile_angles():
             fired = self.apply_projectile_offset(direction.rotate_rad(angle))
             lateral = pygame.Vector2(-fired.y, fired.x)
@@ -2869,6 +3187,14 @@ class Game:
         self.shot_serial += 1
 
     def register_bullet_bounce(self, bullet: Bullet) -> None:
+        if bullet.style == "basketball":
+            base_speed = self.basketball_projectile_speed()
+            current_speed = bullet.velocity.length()
+            target_speed = base_speed if current_speed <= 0 else min(base_speed, current_speed) * config.BASKETBALL_BOUNCE_PUSH
+            if bullet.velocity.length_squared() > 0:
+                bullet.velocity.scale_to_length(max(base_speed * 0.82, target_speed))
+            self.spawn_particles(bullet.pos.copy(), bullet.color, 5, 0.62, (1.3, 2.6), (0.08, 0.18))
+            return
         bullet.bounces_left -= 1
         bullet.damage *= 0.92
         self.spawn_particles(
@@ -2876,7 +3202,7 @@ class Game:
         )
 
     def try_bounce_from_arena(self, bullet: Bullet, arena: pygame.Rect) -> bool:
-        if not bullet.friendly or bullet.bounces_left <= 0:
+        if not self.bullet_can_bounce(bullet):
             return False
         bounced = False
         if (
@@ -2903,10 +3229,8 @@ class Game:
             self.register_bullet_bounce(bullet)
         return bounced
 
-    def try_bounce_from_obstacle(
-        self, bullet: Bullet, obstacle: RoomObstacle, previous_pos: pygame.Vector2
-    ) -> bool:
-        if not bullet.friendly or bullet.bounces_left <= 0:
+    def try_bounce_from_obstacle(self, bullet: Bullet, obstacle: RoomObstacle, previous_pos: pygame.Vector2) -> bool:
+        if not self.bullet_can_bounce(bullet):
             return False
         rect = obstacle.rect
         horizontal_hit = (
@@ -2965,21 +3289,36 @@ class Game:
             previous_pos = bullet.pos.copy()
             bullet.pos += bullet.velocity * dt
             bullet.ttl -= dt
+            self.update_bullet_trail(bullet, dt)
             if bullet.ttl <= 0:
+                if bullet.style == "rocket":
+                    self.explode_rocket(bullet)
+                continue
+            if self.try_bounce_from_arena(bullet, arena):
+                remaining.append(bullet)
                 continue
             if not arena.collidepoint(bullet.pos.x, bullet.pos.y):
-                if self.try_bounce_from_arena(bullet, arena):
-                    remaining.append(bullet)
+                if bullet.style == "rocket":
+                    impact = bullet.pos.copy()
+                    self.clamp_circle_to_arena(impact, bullet.radius)
+                    self.explode_rocket(bullet, impact)
                 continue
             hit = False
             for obstacle in self.obstacles[:]:
                 if not self.projectile_hits_obstacle(bullet, obstacle, previous_pos):
                     continue
+                if bullet.style == "rocket":
+                    self.explode_rocket(bullet, bullet.pos)
+                    hit = True
+                    break
                 hit = True
-                if (bullet.friendly or bullet.hits_all) and obstacle.destructible:
-                    destroyed = self.apply_obstacle_damage(
-                        obstacle, bullet.damage * 0.9
-                    )
+                if bullet.style == "basketball":
+                    if (bullet.friendly or bullet.hits_all) and obstacle.destructible:
+                        self.apply_obstacle_damage(obstacle, bullet.damage * 0.9)
+                    if self.try_bounce_from_obstacle(bullet, obstacle, previous_pos):
+                        hit = False
+                elif (bullet.friendly or bullet.hits_all) and obstacle.destructible:
+                    destroyed = self.apply_obstacle_damage(obstacle, bullet.damage * 0.9)
                     if not destroyed and bullet.pierce > 0:
                         bullet.pierce -= 1
                         hit = False
@@ -2994,39 +3333,33 @@ class Game:
                 continue
             if bullet.friendly or bullet.hits_all:
                 for enemy in self.enemies[:]:
-                    if (
-                        bullet.pos.distance_to(enemy.pos)
-                        <= bullet.radius + enemy.radius
-                    ):
-                        enemy.hp -= bullet.damage
-                        if (
-                            bullet.velocity.length_squared() > 0
-                            and bullet.knockback > 0
-                        ):
-                            push = (
-                                bullet.velocity.normalize()
-                                * bullet.knockback
-                                / enemy.knockback_resist
-                            )
-                            self.move_circle_with_collisions(
-                                enemy.pos, enemy.radius, push
-                            )
-                        color = config.CRIT_COLOR if bullet.crit else (255, 220, 180)
-                        text = (
-                            f"暴击 {int(bullet.damage)}"
-                            if bullet.crit
-                            else str(int(bullet.damage))
-                        )
-                        self.floaters.append(
-                            FloatingText(enemy.pos.copy(), text, color, 0.45)
-                        )
-                        if enemy.hp <= 0:
-                            self.kill_enemy(enemy)
-                        if bullet.pierce > 0:
-                            bullet.pierce -= 1
-                        else:
-                            hit = True
+                    if bullet.pos.distance_to(enemy.pos) > bullet.radius + enemy.radius:
+                        continue
+                    if bullet.style == "rocket":
+                        self.explode_rocket(bullet, enemy.pos)
+                        hit = True
                         break
+                    impact_pos = enemy.pos.copy()
+                    impact_radius = enemy.radius
+                    impact_normal = bullet.pos - impact_pos
+                    enemy.hp -= bullet.damage
+                    if bullet.velocity.length_squared() > 0 and bullet.knockback > 0:
+                        push = bullet.velocity.normalize() * bullet.knockback / enemy.knockback_resist
+                        self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+                    color = config.CRIT_COLOR if bullet.crit else (255, 220, 180)
+                    text = f"\u66b4\u51fb {int(bullet.damage)}" if bullet.crit else str(int(bullet.damage))
+                    self.floaters.append(FloatingText(enemy.pos.copy(), text, color, 0.45))
+                    if bullet.style == "basketball":
+                        self.bounce_bullet_from_enemy(bullet, impact_pos, impact_radius, impact_normal)
+                    if enemy.hp <= 0:
+                        self.kill_enemy(enemy)
+                    if bullet.style == "basketball":
+                        hit = False
+                    elif bullet.pierce > 0:
+                        bullet.pierce -= 1
+                    else:
+                        hit = True
+                    break
             if not hit and (not bullet.friendly or bullet.hits_all):
                 if (
                     bullet.pos.distance_to(self.player_pos)
@@ -3854,7 +4187,32 @@ class Game:
             if bullet.decay_visual and bullet.max_ttl > 0:
                 life = max(0.0, min(1.0, bullet.ttl / bullet.max_ttl))
                 radius = max(1, int(round(bullet.radius * (0.28 + 0.72 * life))))
-            pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
+            if bullet.style == "rocket" and bullet.velocity.length_squared() > 0:
+                heading = bullet.velocity.normalize()
+                tail = bullet.pos - heading * (radius * 2.1)
+                wing = pygame.Vector2(-heading.y, heading.x) * max(3, radius * 0.75)
+                nose = bullet.pos + heading * (radius * 1.4)
+                pygame.draw.polygon(self.screen, bullet.color, (nose, tail + wing, tail - wing))
+                pygame.draw.circle(self.screen, config.ROCKET_CORE_COLOR, bullet.pos, max(2, radius - 3))
+                exhaust = tail - heading * 4
+                pygame.draw.circle(self.screen, config.ROCKET_EXPLOSION_COLOR, exhaust, max(2, radius // 2 + 1))
+            elif bullet.style == "basketball":
+                center = (int(bullet.pos.x), int(bullet.pos.y))
+                pygame.draw.circle(self.screen, bullet.color, center, radius)
+                pygame.draw.circle(self.screen, config.BASKETBALL_LINE_COLOR, center, radius, 2)
+                pygame.draw.line(
+                    self.screen,
+                    config.BASKETBALL_LINE_COLOR,
+                    (center[0] - radius + 2, center[1]),
+                    (center[0] + radius - 2, center[1]),
+                    2,
+                )
+                left_arc = pygame.Rect(center[0] - radius, center[1] - radius, radius + 4, radius * 2)
+                right_arc = pygame.Rect(center[0] - 4, center[1] - radius, radius + 4, radius * 2)
+                pygame.draw.arc(self.screen, config.BASKETBALL_LINE_COLOR, left_arc, -math.pi / 2, math.pi / 2, 2)
+                pygame.draw.arc(self.screen, config.BASKETBALL_LINE_COLOR, right_arc, math.pi / 2, math.pi * 1.5, 2)
+            else:
+                pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
 
         for enemy in self.enemies:
             pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
@@ -3886,14 +4244,8 @@ class Game:
             self.screen, player_color, self.player_pos, config.PLAYER_RADIUS
         )
         self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
-        if self.pulse_timer > self.pulse_cooldown - 0.18:
-            pygame.draw.circle(
-                self.screen,
-                config.BULLET_SHOCK_COLOR,
-                self.player_pos,
-                int(self.pulse_radius),
-                3,
-            )
+        if self.active_skill_key == "pulse" and self.skill_timer > self.active_skill_cooldown() - 0.18:
+            pygame.draw.circle(self.screen, config.BULLET_SHOCK_COLOR, self.player_pos, int(self.pulse_radius), 3)
         mouse = pygame.Vector2(pygame.mouse.get_pos())
         aim = mouse - self.player_pos
         if aim.length_squared() > 0:
@@ -3913,6 +4265,16 @@ class Game:
 
         self.draw_hud()
         self.draw_overlay()
+        if self.screen_shake_timer > 0 and self.screen_shake_strength > 0:
+            life = self.screen_shake_timer / max(0.01, self.screen_shake_total)
+            amplitude = max(1, int(round(self.screen_shake_strength * life)))
+            frame = self.screen.copy()
+            offset = (
+                self.rng.randint(-amplitude, amplitude),
+                self.rng.randint(-amplitude, amplitude),
+            )
+            self.screen.fill(config.BACKGROUND)
+            self.screen.blit(frame, offset)
         pygame.display.flip()
 
     def draw_actor_face(
@@ -4288,33 +4650,43 @@ class Game:
             return
         if room.room_type == "shop":
             for offer in room.shop_offers:
-                fill = (58, 62, 86) if not offer.sold else (52, 48, 48)
-                border = config.CREDIT_COLOR if not offer.sold else (120, 120, 120)
-                panel = pygame.Rect(0, 0, 140, 94)
-                panel.center = (offer.pos.x, offer.pos.y + 18)
-                pygame.draw.rect(self.screen, fill, panel, border_radius=16)
-                pygame.draw.rect(self.screen, border, panel, 2, border_radius=16)
-                orb_color = (
-                    config.CREDIT_COLOR
-                    if offer.key != "shield_charge"
-                    else config.SHIELD_COLOR
-                )
-                pygame.draw.circle(self.screen, orb_color, offer.pos, 18)
-                name = self.small_font.render(offer.name, True, config.TEXT_COLOR)
-                cost = self.small_font.render(f"{offer.cost} 晶片", True, border)
-                self.screen.blit(
-                    name, name.get_rect(center=(panel.centerx, panel.top + 48))
-                )
-                label = "已售出" if offer.sold else cost
-                if not offer.sold:
-                    self.screen.blit(
-                        cost, cost.get_rect(center=(panel.centerx, panel.bottom - 18))
-                    )
+                if offer.key == "repair":
+                    accent = config.HEAL_COLOR
+                elif offer.key in {"shield_charge", "shield_core"}:
+                    accent = config.SHIELD_COLOR
+                elif offer.key in {"damage", "crit_rate", "crit_damage"}:
+                    accent = config.CRIT_COLOR
+                elif offer.key in {"speed", "dash"}:
+                    accent = config.PLAYER_COLOR
+                elif offer.key in {"ricochet", "pierce", "multishot", "accuracy", "shotgun_range"}:
+                    accent = config.BULLET_COLOR
+                elif offer.key == "rocket_blast":
+                    accent = config.ROCKET_EXPLOSION_COLOR
                 else:
-                    sold = self.small_font.render("已售出", True, config.MUTED_TEXT)
-                    self.screen.blit(
-                        sold, sold.get_rect(center=(panel.centerx, panel.bottom - 18))
-                    )
+                    accent = config.CREDIT_COLOR
+                fill = (54, 59, 82) if not offer.sold else (44, 42, 48)
+                border = accent if not offer.sold else (112, 112, 118)
+                panel = pygame.Rect(0, 0, 160, 110)
+                panel.center = (offer.pos.x, offer.pos.y)
+                pygame.draw.rect(self.screen, fill, panel, border_radius=18)
+                pygame.draw.rect(self.screen, border, panel, 2, border_radius=18)
+                icon_center = (panel.centerx, panel.top + 20)
+                pygame.draw.circle(self.screen, accent, icon_center, 14)
+                pygame.draw.circle(self.screen, (255, 255, 255), icon_center, 14, 2)
+
+                name_lines = self.wrap_text(offer.name, self.small_font, panel.width - 20, 2)
+                for idx, line in enumerate(name_lines):
+                    name_surf = self.small_font.render(line, True, config.TEXT_COLOR)
+                    self.screen.blit(name_surf, name_surf.get_rect(center=(panel.centerx, panel.top + 42 + idx * 16)))
+
+                for idx, line in enumerate(self.wrap_text(offer.description, self.tiny_font, panel.width - 24, 2)):
+                    desc_surf = self.tiny_font.render(line, True, config.MUTED_TEXT)
+                    self.screen.blit(desc_surf, desc_surf.get_rect(center=(panel.centerx, panel.top + 74 + idx * 13)))
+
+                footer_text = "已售出" if offer.sold else f"{offer.cost} 晶片"
+                footer_color = config.MUTED_TEXT if offer.sold else border
+                footer_surf = self.small_font.render(footer_text, True, footer_color)
+                self.screen.blit(footer_surf, footer_surf.get_rect(center=(panel.centerx, panel.bottom - 15)))
         elif room.room_type == "treasure" and not room.chest_opened:
             pos = self.get_room_feature_anchor(room)
             chest = pygame.Rect(0, 0, 68, 48)
@@ -4415,16 +4787,8 @@ class Game:
             else self.player_shield / self.player_max_shield
         )
         xp_ratio = self.xp / self.xp_to_level
-        room_label = (
-            self.room_type_label(self.current_room_state.room_type)
-            if self.current_room_state is not None
-            else "未进入房间"
-        )
-        room_kind = (
-            self.current_room_state.room_type
-            if self.current_room_state is not None
-            else "start"
-        )
+        room_label = self.room_type_label(self.current_room_state.room_type) if self.current_room_state is not None else "\u672a\u8fdb\u5165\u623f\u95f4"
+        room_kind = self.current_room_state.room_type if self.current_room_state is not None else "start"
         badge_color = {
             "boss": config.BOSS_COLOR,
             "elite": config.BULLET_ELITE_COLOR,
@@ -4432,117 +4796,96 @@ class Game:
             "treasure": config.ITEM_COLOR,
         }.get(room_kind, config.PLAYER_COLOR)
 
-        hud_left = 16
-        hud_top = 16
-        panel_width = 328
-        status_panel = pygame.Rect(hud_left, hud_top, panel_width, 136)
-        detail_panel = pygame.Rect(hud_left, status_panel.bottom + 8, panel_width, 82)
+        hud_left = 12
+        hud_top = 12
+        panel_width = 228
+        status_panel = pygame.Rect(hud_left, hud_top, panel_width, 88)
+        detail_panel = pygame.Rect(hud_left, status_panel.bottom + 5, panel_width, 50)
         self.draw_hud_panel(status_panel)
         self.draw_hud_panel(detail_panel, border_color=config.CARD_HILITE)
 
-        self.screen.blit(
-            self.tiny_font.render("作战面板", True, config.MUTED_TEXT),
-            (status_panel.left + 12, status_panel.top + 10),
-        )
-        floor_label = self.small_font.render(
-            f"第 {self.floor_index} 层", True, config.TEXT_COLOR
-        )
-        self.screen.blit(floor_label, (status_panel.left + 12, status_panel.top + 24))
+        floor_label = self.small_font.render(f"\u7b2c {self.floor_index} \u5c42", True, config.TEXT_COLOR)
+        self.screen.blit(floor_label, (status_panel.left + 10, status_panel.top + 7))
 
-        badge = pygame.Rect(status_panel.right - 102, status_panel.top + 12, 88, 24)
+        badge = pygame.Rect(status_panel.right - 68, status_panel.top + 8, 56, 18)
         pygame.draw.rect(self.screen, config.CARD, badge, border_radius=12)
         pygame.draw.rect(self.screen, badge_color, badge, 2, border_radius=12)
         badge_text = self.fit_text_line(room_label, self.tiny_font, badge.width - 12)
         badge_surf = self.tiny_font.render(badge_text, True, config.TEXT_COLOR)
         self.screen.blit(badge_surf, badge_surf.get_rect(center=badge.center))
 
-        meter_width = status_panel.width - 24
+        meter_width = status_panel.width - 20
         self.draw_hud_meter(
-            pygame.Rect(status_panel.left + 12, status_panel.top + 52, meter_width, 15),
-            "生命",
+            pygame.Rect(status_panel.left + 10, status_panel.top + 28, meter_width, 10),
+            "",
             hp_ratio,
             f"{int(self.player_hp)}/{int(self.player_max_hp)}",
-            (80, 220, 145),
-            (48, 30, 30),
+            config.HUD_HP_BAR,
+            config.HUD_HP_BG,
         )
         self.draw_hud_meter(
-            pygame.Rect(status_panel.left + 12, status_panel.top + 73, meter_width, 13),
-            "护盾",
+            pygame.Rect(status_panel.left + 10, status_panel.top + 42, meter_width, 8),
+            "",
             shield_ratio,
             f"{int(self.player_shield)}/{int(self.player_max_shield)}",
-            (112, 198, 255),
-            (26, 42, 76),
+            config.HUD_SHIELD_BAR,
+            config.HUD_SHIELD_BG,
         )
         self.draw_hud_meter(
-            pygame.Rect(status_panel.left + 12, status_panel.top + 92, meter_width, 13),
-            "经验",
+            pygame.Rect(status_panel.left + 10, status_panel.top + 54, meter_width, 8),
+            "",
             xp_ratio,
             f"{self.xp}/{self.xp_to_level}",
-            (98, 168, 255),
-            (38, 48, 82),
+            config.HUD_XP_BAR,
+            config.HUD_XP_BG,
         )
 
-        chip_gap = 8
-        chip_width = (status_panel.width - 24 - chip_gap * 3) // 4
-        chip_y = status_panel.bottom - 26
+        chip_gap = 6
+        chip_width = (status_panel.width - 20 - chip_gap) // 2
+        chip_y = status_panel.bottom - 22
         chip_specs = (
-            ("等级", str(self.level), config.XP_COLOR),
-            ("晶片", str(self.credits), config.CREDIT_COLOR),
-            ("击杀", str(self.kills), config.PLAYER_COLOR),
-            ("清房", str(self.rooms_cleared), config.SHIELD_COLOR),
+            ("\u7b49\u7ea7", str(self.level), config.XP_COLOR),
+            ("\u6676\u7247", str(self.credits), config.CREDIT_COLOR),
         )
         for idx, (label, value, accent) in enumerate(chip_specs):
-            chip_rect = pygame.Rect(
-                status_panel.left + 12 + idx * (chip_width + chip_gap),
-                chip_y,
-                chip_width,
-                18,
-            )
+            chip_rect = pygame.Rect(status_panel.left + 10 + idx * (chip_width + chip_gap), chip_y, chip_width, 16)
             self.draw_hud_chip(chip_rect, label, value, accent)
 
-        self.screen.blit(
-            self.tiny_font.render("当前部署", True, config.MUTED_TEXT),
-            (detail_panel.left + 12, detail_panel.top + 9),
-        )
         loadout_line = self.fit_text_line(
             f"{self.selected_character.name} / {self.selected_weapon.name}",
-            self.small_font,
-            detail_panel.width - 24,
+            self.tiny_font,
+            detail_panel.width - 20,
         )
-        self.screen.blit(
-            self.small_font.render(loadout_line, True, config.TEXT_COLOR),
-            (detail_panel.left + 12, detail_panel.top + 24),
-        )
+        self.screen.blit(self.tiny_font.render(loadout_line, True, config.TEXT_COLOR), (detail_panel.left + 10, detail_panel.top + 7))
 
         if self.weapon_mode == "laser":
             detail_text = (
-                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 宽度 {self.player_beam_width}"
-                f" · 暴击 {int(self.player_crit_chance * 100)}% · 反射 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u5bbd {self.player_beam_width}"
+                f" \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
+            )
+        elif self.is_rocket_weapon():
+            detail_text = (
+                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u7206 {int(self.player_rocket_explosion_radius)}"
+                f" \u00b7 \u63a8 {int(self.player_rocket_explosion_knockback)}"
             )
         elif self.is_shotgun_weapon():
             detail_text = (
-                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 弹丸 {self.player_shotgun_pellets}"
-                f" · 距离 {self.player_projectile_ttl:.2f}s · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u4e38 {self.player_shotgun_pellets}"
+                f" \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
         else:
             detail_text = (
-                f"伤害 {int(self.player_damage)} · 间隔 {self.fire_cooldown:.2f}s · 准度 {self.get_accuracy_rating()}%"
-                f" · 穿透 {self.bullet_pierce} · 散射 {self.multishot} · 反弹 {self.player_bullet_bounces}/{self.ricochet_cap()}"
+                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u51c6 {self.get_accuracy_rating()}%"
+                f" \u00b7 \u7a7f {self.bullet_pierce} \u00b7 \u4fa7 {self.current_multishot_lane_count()} \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
             )
-        for idx, line in enumerate(
-            self.wrap_text(detail_text, self.tiny_font, detail_panel.width - 24, 2)
-        ):
-            self.screen.blit(
-                self.tiny_font.render(line, True, config.MUTED_TEXT),
-                (detail_panel.left + 12, detail_panel.top + 44 + idx * 14),
-            )
+        detail_line = self.fit_text_line(detail_text, self.tiny_font, detail_panel.width - 20)
+        self.screen.blit(self.tiny_font.render(detail_line, True, config.MUTED_TEXT), (detail_panel.left + 10, detail_panel.top + 25))
 
-        dash_text = "就绪" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
-        pulse_text = "就绪" if self.pulse_timer <= 0 else f"{self.pulse_timer:.1f}s"
-        skills = self.small_font.render(
-            f"冲刺 {dash_text}  ·  脉冲 {pulse_text}", True, config.MUTED_TEXT
-        )
-        self.screen.blit(skills, (16, config.HEIGHT - 34))
+        dash_text = "\u5c31\u7eea" if self.dash_timer <= 0 else f"{self.dash_timer:.1f}s"
+        skill_text = self.active_skill_status_text()
+        skill_line = self.fit_text_line(f"\u51b2\u523a {dash_text} \u00b7 Q {self.active_skill_label} {skill_text}", self.tiny_font, 210)
+        skills = self.tiny_font.render(skill_line, True, config.MUTED_TEXT)
+        self.screen.blit(skills, (12, config.HEIGHT - 26))
         prompt = self.current_interaction_prompt()
         if prompt:
             prompt_surf = self.font.render(prompt, True, config.PLAYER_HIT_COLOR)
@@ -4602,7 +4945,7 @@ class Game:
             self.draw_center_card(
                 "确认下潜",
                 f"是否进入第 {self.floor_index + 1} 层？",
-                "按 E / Enter 确认，Esc 取消",
+                "E / Enter 确认 · Esc 取消",
             )
         elif self.mode == "floor_transition":
             self.draw_floor_transition()
@@ -4612,21 +4955,62 @@ class Game:
             self.screen.blit(surf, surf.get_rect(center=(config.WIDTH / 2, 54)))
 
     def draw_center_card(self, title: str, subtitle: str, prompt: str) -> None:
-        panel = pygame.Rect(0, 0, 520, 240)
+        panel = pygame.Rect(0, 0, 548, 248)
         panel.center = (config.WIDTH / 2, config.HEIGHT / 2)
         shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 130))
         self.screen.blit(shade, (0, 0))
         pygame.draw.rect(self.screen, config.PANEL, panel, border_radius=18)
         pygame.draw.rect(self.screen, config.ARENA_BORDER, panel, 3, border_radius=18)
-        texts = [
-            self.big_font.render(title, True, config.TEXT_COLOR),
-            self.font.render(subtitle, True, config.MUTED_TEXT),
-            self.font.render(prompt, True, config.PLAYER_COLOR),
-        ]
-        ys = [panel.top + 48, panel.top + 112, panel.top + 170]
-        for surf, y in zip(texts, ys):
+        title_surf = self.big_font.render(title, True, config.TEXT_COLOR)
+        self.screen.blit(title_surf, title_surf.get_rect(center=(panel.centerx, panel.top + 52)))
+        y = panel.top + 98
+        for line in self.wrap_text(subtitle, self.font, panel.width - 72, 3):
+            surf = self.font.render(line, True, config.MUTED_TEXT)
             self.screen.blit(surf, surf.get_rect(center=(panel.centerx, y)))
+            y += 28
+        y = max(y + 10, panel.bottom - 58)
+        for line in self.wrap_text(prompt, self.small_font, panel.width - 72, 2):
+            surf = self.small_font.render(line, True, config.PLAYER_COLOR)
+            self.screen.blit(surf, surf.get_rect(center=(panel.centerx, y)))
+            y += 22
+
+    def draw_choice_cards(
+        self,
+        title: str,
+        subtitle: str,
+        items: list[tuple[str, str]],
+        accent: tuple[int, int, int],
+    ) -> None:
+        shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 160))
+        self.screen.blit(shade, (0, 0))
+        title_surf = self.big_font.render(title, True, config.TEXT_COLOR)
+        self.screen.blit(title_surf, title_surf.get_rect(center=(config.WIDTH / 2, 108)))
+        subtitle_surf = self.small_font.render(subtitle, True, config.MUTED_TEXT)
+        self.screen.blit(subtitle_surf, subtitle_surf.get_rect(center=(config.WIDTH / 2, 144)))
+        mouse_pos = pygame.mouse.get_pos()
+        for idx, ((name, description), rect) in enumerate(zip(items, self.get_choice_rects())):
+            hovered = rect.collidepoint(mouse_pos)
+            fill = (40, 47, 70) if hovered else config.CARD
+            border = accent if hovered else config.CARD_HILITE
+            pygame.draw.rect(self.screen, fill, rect, border_radius=18)
+            pygame.draw.rect(self.screen, border, rect, 3, border_radius=18)
+            badge = pygame.Rect(rect.left + 16, rect.top + 14, 34, 28)
+            pygame.draw.rect(self.screen, config.PANEL, badge, border_radius=12)
+            pygame.draw.rect(self.screen, accent, badge, 2, border_radius=12)
+            num = self.small_font.render(str(idx + 1), True, config.TEXT_COLOR)
+            self.screen.blit(num, num.get_rect(center=badge.center))
+            name_y = rect.top + 54
+            for line in self.wrap_text(name, self.font, rect.width - 32, 2):
+                surf = self.font.render(line, True, config.TEXT_COLOR)
+                self.screen.blit(surf, (rect.left + 16, name_y))
+                name_y += 24
+            desc_y = max(rect.top + 104, name_y + 6)
+            for line in self.wrap_text(description, self.small_font, rect.width - 32, 3):
+                surf = self.small_font.render(line, True, config.MUTED_TEXT)
+                self.screen.blit(surf, (rect.left + 16, desc_y))
+                desc_y += 19
 
     def draw_floor_transition(self) -> None:
         total = max(0.01, self.floor_transition_total)
@@ -4661,101 +5045,37 @@ class Game:
             self.screen.blit(surf, surf.get_rect(center=(panel.centerx, y)))
 
     def draw_level_up(self) -> None:
-        shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 165))
-        self.screen.blit(shade, (0, 0))
-        title = self.big_font.render("选择增益", True, config.TEXT_COLOR)
-        self.screen.blit(title, title.get_rect(center=(config.WIDTH / 2, 110)))
-        prompt = self.font.render("按 1 / 2 / 3 或点击卡片", True, config.MUTED_TEXT)
-        self.screen.blit(prompt, prompt.get_rect(center=(config.WIDTH / 2, 150)))
-        mouse_pos = pygame.mouse.get_pos()
-        for idx, (upgrade, rect) in enumerate(
-            zip(self.upgrade_choices, self.get_choice_rects())
-        ):
-            pygame.draw.rect(self.screen, config.CARD, rect, border_radius=18)
-            border = (
-                config.PLAYER_COLOR
-                if rect.collidepoint(mouse_pos)
-                else config.CARD_HILITE
-            )
-            pygame.draw.rect(self.screen, border, rect, 3, border_radius=18)
-            num = self.big_font.render(str(idx + 1), True, config.PLAYER_COLOR)
-            name = self.font.render(upgrade.name, True, config.TEXT_COLOR)
-            desc = self.small_font.render(upgrade.description, True, config.MUTED_TEXT)
-            self.screen.blit(num, (rect.left + 20, rect.top + 12))
-            self.screen.blit(name, (rect.left + 24, rect.top + 78))
-            self.screen.blit(desc, (rect.left + 24, rect.top + 120))
+        self.draw_choice_cards(
+            "选择增益",
+            "1 / 2 / 3 或点击卡片",
+            [(upgrade.name, upgrade.description) for upgrade in self.upgrade_choices],
+            config.PLAYER_COLOR,
+        )
 
     def draw_reward_room(self) -> None:
-        shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 155))
-        self.screen.blit(shade, (0, 0))
         title_text = "宝箱奖励" if self.reward_source == "treasure" else "奖励房"
-        sub_text = (
-            "打开宝箱后选择一个强化：点击或按 1 / 2 / 3"
-            if self.reward_source == "treasure"
-            else "免费获得一个强化：点击或按 1 / 2 / 3"
+        sub_text = "打开后选择 1 项强化" if self.reward_source == "treasure" else "免费获得 1 项强化"
+        self.draw_choice_cards(
+            title_text,
+            sub_text,
+            [(upgrade.name, upgrade.description) for upgrade in self.reward_choices],
+            config.PLAYER_HIT_COLOR,
         )
-        title = self.big_font.render(title_text, True, config.TEXT_COLOR)
-        sub = self.font.render(sub_text, True, config.MUTED_TEXT)
-        self.screen.blit(title, title.get_rect(center=(config.WIDTH / 2, 102)))
-        self.screen.blit(sub, sub.get_rect(center=(config.WIDTH / 2, 146)))
-        mouse_pos = pygame.mouse.get_pos()
-        for idx, (upgrade, rect) in enumerate(
-            zip(self.reward_choices, self.get_choice_rects())
-        ):
-            pygame.draw.rect(self.screen, config.CARD, rect, border_radius=18)
-            border = (
-                config.PLAYER_HIT_COLOR
-                if rect.collidepoint(mouse_pos)
-                else config.PLAYER_COLOR
-            )
-            pygame.draw.rect(self.screen, border, rect, 3, border_radius=18)
-            num = self.big_font.render(str(idx + 1), True, config.PLAYER_COLOR)
-            name = self.font.render(upgrade.name, True, config.TEXT_COLOR)
-            desc = self.small_font.render(upgrade.description, True, config.MUTED_TEXT)
-            self.screen.blit(num, (rect.left + 20, rect.top + 12))
-            self.screen.blit(name, (rect.left + 24, rect.top + 78))
-            self.screen.blit(desc, (rect.left + 24, rect.top + 120))
 
     def draw_supply_room(self) -> None:
-        shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 155))
-        self.screen.blit(shade, (0, 0))
-        title = self.big_font.render("补给房", True, config.TEXT_COLOR)
-        sub = self.font.render(
-            "选择一项补给：点击或按 1 / 2 / 3", True, config.MUTED_TEXT
+        self.draw_choice_cards(
+            "补给房",
+            "选择 1 项补给",
+            [(option.name, option.description) for option in self.supply_choices],
+            config.XP_COLOR,
         )
-        self.screen.blit(title, title.get_rect(center=(config.WIDTH / 2, 102)))
-        self.screen.blit(sub, sub.get_rect(center=(config.WIDTH / 2, 146)))
-        mouse_pos = pygame.mouse.get_pos()
-        for idx, (option, rect) in enumerate(
-            zip(self.supply_choices, self.get_choice_rects())
-        ):
-            pygame.draw.rect(self.screen, config.CARD, rect, border_radius=18)
-            border = (
-                config.XP_COLOR if rect.collidepoint(mouse_pos) else config.CARD_HILITE
-            )
-            pygame.draw.rect(self.screen, border, rect, 3, border_radius=18)
-            num = self.big_font.render(str(idx + 1), True, config.PLAYER_COLOR)
-            name = self.font.render(option.name, True, config.TEXT_COLOR)
-            desc = self.small_font.render(option.description, True, config.MUTED_TEXT)
-            self.screen.blit(num, (rect.left + 20, rect.top + 12))
-            self.screen.blit(name, (rect.left + 24, rect.top + 78))
-            self.screen.blit(desc, (rect.left + 24, rect.top + 120))
 
     def draw_title_menu(self) -> None:
         shade = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 152))
         self.screen.blit(shade, (0, 0))
-        title = self.big_font.render(
-            "\u94a2\u94c1\u8702\u5de2", True, config.TEXT_COLOR
-        )
-        sub = self.small_font.render(
-            "\u4e3b\u83dc\u5355\u5df2\u62c6\u5206\u4e3a\u72ec\u7acb\u914d\u7f6e\u9875\u3002\u56de\u8f66 / Space \u5f00\u59cb\u3002",
-            True,
-            config.MUTED_TEXT,
-        )
+        title = self.big_font.render("\u94a2\u94c1\u8702\u5de2", True, config.TEXT_COLOR)
+        sub = self.small_font.render("\u56de\u8f66 / Space \u5f00\u59cb\u90e8\u7f72", True, config.MUTED_TEXT)
         self.screen.blit(title, title.get_rect(midleft=(44, 48)))
         self.screen.blit(sub, sub.get_rect(midleft=(46, 80)))
         mouse_pos = pygame.mouse.get_pos()
@@ -4771,27 +5091,9 @@ class Game:
             )
             btns = self.get_title_menu_buttons()
             items = (
-                (
-                    "stage",
-                    "1 \u5173\u5361\u9009\u62e9",
-                    self.selected_stage.name,
-                    self.selected_stage.description,
-                    config.PLAYER_COLOR,
-                ),
-                (
-                    "character",
-                    "2 \u89d2\u8272\u9009\u62e9",
-                    self.selected_character.name,
-                    self.selected_character.passive,
-                    config.SHIELD_COLOR,
-                ),
-                (
-                    "weapon",
-                    "3 \u6b66\u5668\u9009\u62e9",
-                    self.selected_weapon.name,
-                    self.selected_weapon.passive,
-                    config.CREDIT_COLOR,
-                ),
+                ("stage", "1 \u5173\u5361\u9009\u62e9", self.selected_stage.name, self.selected_stage.description, config.PLAYER_COLOR),
+                ("character", "2 \u89d2\u8272\u9009\u62e9", self.selected_character.name, self.selected_character_skill_summary(), config.SHIELD_COLOR),
+                ("weapon", "3 \u6b66\u5668\u9009\u62e9", self.selected_weapon.name, self.selected_weapon.passive, config.CREDIT_COLOR),
             )
             for key, title_text, selected_name, desc, color in items:
                 rect = btns[key]
@@ -4855,11 +5157,9 @@ class Game:
                 f"机体：{self.selected_character.name}",
                 f"武器：{self.selected_weapon.name}",
             )
+            deploy_col_width = (deploy_card.width - 28) // 3
             for idx, line in enumerate(deploy_lines):
-                self.screen.blit(
-                    self.small_font.render(line, True, config.MUTED_TEXT),
-                    (deploy_card.left + 14 + idx * 210, deploy_card.top + 44),
-                )
+                self.screen.blit(self.small_font.render(line, True, config.MUTED_TEXT), (deploy_card.left + 14 + idx * deploy_col_width, deploy_card.top + 44))
 
             detail_width = (panel.width - 48) // 2
             for idx, (title_text, name_text, desc_text) in enumerate(
@@ -4897,42 +5197,21 @@ class Game:
                 panel.left + 16, panel.top + 336, panel.width - 32, 78
             )
             pygame.draw.rect(self.screen, config.CARD, skills_card, border_radius=14)
-            pygame.draw.rect(
-                self.screen, config.CARD_HILITE, skills_card, 2, border_radius=14
-            )
-            self.screen.blit(
-                self.small_font.render(
-                    "\u57fa\u7840\u64cd\u4f5c", True, config.MUTED_TEXT
-                ),
-                (skills_card.left + 12, skills_card.top + 8),
-            )
+            pygame.draw.rect(self.screen, config.CARD_HILITE, skills_card, 2, border_radius=14)
+            self.screen.blit(self.small_font.render("\u57fa\u7840\u64cd\u4f5c", True, config.MUTED_TEXT), (skills_card.left + 12, skills_card.top + 8))
+            skill_col_width = (skills_card.width - 24) // 2
             for idx, line in enumerate(TITLE_SKILLS):
                 col = idx % 2
                 row = idx // 2
-                self.screen.blit(
-                    self.small_font.render(line, True, config.TEXT_COLOR),
-                    (
-                        skills_card.left + 12 + col * 214,
-                        skills_card.top + 28 + row * 18,
-                    ),
-                )
+                self.screen.blit(self.small_font.render(line, True, config.TEXT_COLOR), (skills_card.left + 12 + col * skill_col_width, skills_card.top + 28 + row * 18))
 
             action_card = pygame.Rect(
                 panel.left + 16, panel.bottom - 90, panel.width - 32, 66
             )
             pygame.draw.rect(self.screen, config.CARD, action_card, border_radius=14)
-            pygame.draw.rect(
-                self.screen, config.CARD_HILITE, action_card, 2, border_radius=14
-            )
-            hint = self.small_font.render(
-                "确认配置后，按 Enter / Space 或点击右侧按钮开始部署",
-                True,
-                config.MUTED_TEXT,
-            )
-            self.screen.blit(
-                hint,
-                hint.get_rect(midleft=(action_card.left + 16, action_card.centery)),
-            )
+            pygame.draw.rect(self.screen, config.CARD_HILITE, action_card, 2, border_radius=14)
+            hint = self.small_font.render("确认配置后即可开始", True, config.MUTED_TEXT)
+            self.screen.blit(hint, hint.get_rect(midleft=(action_card.left + 16, action_card.centery)))
 
             start_rect = self.get_title_start_button()
             hovered = start_rect.collidepoint(mouse_pos)
@@ -5002,36 +5281,19 @@ class Game:
                 )
                 if active:
                     active_badge = pygame.Rect(rect.right - 98, rect.top + 12, 82, 24)
-                    pygame.draw.rect(
-                        self.screen, config.PANEL, active_badge, border_radius=12
-                    )
-                    pygame.draw.rect(
-                        self.screen,
-                        config.PLAYER_COLOR,
-                        active_badge,
-                        2,
-                        border_radius=12,
-                    )
-                    badge_text = self.small_font.render(
-                        "已选择", True, config.TEXT_COLOR
-                    )
-                    self.screen.blit(
-                        badge_text, badge_text.get_rect(center=active_badge.center)
-                    )
-                desc_lines = self.wrap_text(
-                    option.description,
-                    self.small_font,
-                    rect.width - 92,
-                    2 if self.title_panel == "weapon" else 1,
-                )
-                passive = (
-                    option.passive
-                    if hasattr(option, "passive")
-                    else f"起始难度：{option.start_room}"
-                )
-                passive_lines = self.wrap_text(
-                    passive, self.small_font, rect.width - 92, 2
-                )
+                    pygame.draw.rect(self.screen, config.PANEL, active_badge, border_radius=12)
+                    pygame.draw.rect(self.screen, config.PLAYER_COLOR, active_badge, 2, border_radius=12)
+                    badge_text = self.small_font.render("已选择", True, config.TEXT_COLOR)
+                    self.screen.blit(badge_text, badge_text.get_rect(center=active_badge.center))
+                if self.title_panel == "weapon":
+                    desc_lines = self.wrap_text(option.description, self.small_font, rect.width - 92, 2)
+                else:
+                    desc_lines = self.wrap_text(option.description, self.small_font, rect.width - 92, 1)
+                passive = option.passive if hasattr(option, "passive") else f"起始难度：{option.start_room}"
+                passive_lines = self.wrap_text(passive, self.small_font, rect.width - 92, 1 if self.title_panel == "character" else 2)
+                skill_lines: list[str] = []
+                if self.title_panel == "character" and hasattr(option, "skill_key"):
+                    skill_lines = self.wrap_text(self.character_skill_data(option.skill_key).description, self.small_font, rect.width - 92, 2)
                 line_y = rect.top + 40
                 for line in desc_lines:
                     self.screen.blit(
@@ -5044,6 +5306,9 @@ class Game:
                         self.small_font.render(line, True, config.TEXT_COLOR),
                         (rect.left + 54, line_y),
                     )
+                    line_y += 16
+                for line in skill_lines:
+                    self.screen.blit(self.small_font.render(line, True, config.SHIELD_COLOR), (rect.left + 54, line_y))
                     line_y += 16
             self.screen.set_clip(previous_clip)
 
@@ -5076,14 +5341,8 @@ class Game:
                     )
 
             pygame.draw.rect(self.screen, config.CARD, footer, border_radius=16)
-            pygame.draw.rect(
-                self.screen, config.CARD_HILITE, footer, 2, border_radius=16
-            )
-            hint_text = (
-                "滚轮 / ↑↓ 滑动列表，数字键可直接选择"
-                if self.title_panel_uses_scroll()
-                else "点击卡片或按数字键立即选择"
-            )
+            pygame.draw.rect(self.screen, config.CARD_HILITE, footer, 2, border_radius=16)
+            hint_text = "滚轮 / ↑↓ 滚动，数字键可直接选" if self.title_panel_uses_scroll() else "点击卡片或按数字键选择"
             hint = self.small_font.render(hint_text, True, config.MUTED_TEXT)
             self.screen.blit(
                 hint, (footer.left + 18, footer.centery - hint.get_height() // 2)
@@ -5092,11 +5351,7 @@ class Game:
             self.draw_action_button(self.get_title_panel_start_button(), "\u5f00\u5c40")
 
     def draw_pause_menu(self) -> None:
-        self.draw_center_card(
-            "\u5df2\u6682\u505c",
-            "\u70b9\u51fb\u6309\u94ae\u6216\u6309\u952e\u7ee7\u7eed\u64cd\u4f5c",
-            "ESC \u7ee7\u7eed",
-        )
+        self.draw_center_card("\u5df2\u6682\u505c", "\u9009\u62e9\u4e00\u9879\u64cd\u4f5c", "ESC \u7ee7\u7eed")
         labels = ["\u7ee7\u7eed", "\u91cd\u5f00", "\u83dc\u5355"]
         for rect, label in zip(self.get_center_action_buttons(3), labels):
             self.draw_action_button(rect, label)
@@ -5105,8 +5360,8 @@ class Game:
         current_score = self.calculate_score()
         self.draw_center_card(
             "\u672c\u5c40\u5931\u8d25",
-            f"\u5206\u6570\uff1a{current_score}    \u6e05\u623f\uff1a{self.rooms_cleared}    \u51fb\u6740\uff1a{self.kills}    \u697c\u5c42\uff1a{self.floor_index}",
-            f"\u6700\u9ad8\u5206 {self.best_record['best_score']} / \u6700\u9ad8\u5c42 {self.best_record['best_floor']}",
+            f"\u5206\u6570 {current_score} · \u6e05\u623f {self.rooms_cleared} · \u51fb\u6740 {self.kills} · \u697c\u5c42 {self.floor_index}",
+            f"\u6700\u9ad8\u5206 {self.best_record['best_score']} · \u6700\u9ad8\u5c42 {self.best_record['best_floor']}",
         )
         labels = ["\u91cd\u5f00", "\u83dc\u5355"]
         for rect, label in zip(self.get_center_action_buttons(2), labels):
