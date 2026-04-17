@@ -169,9 +169,22 @@ class Game:
         self.pulse_damage = float(config.PULSE_DAMAGE)
         self.pulse_radius = float(config.PULSE_RADIUS)
         self.pulse_cooldown = float(config.PULSE_COOLDOWN)
+        self.pulse_effect_timer = 0.0
+        self.pulse_effect_total = 0.0
         self.basketball_damage = float(config.BASKETBALL_DAMAGE)
         self.basketball_speed_scale = float(config.BASKETBALL_SPEED_SCALE)
         self.basketball_upgrade_level = 0
+        self.mamba_skill_damage = float(config.MAMBA_SKILL_DAMAGE)
+        self.mamba_skill_stun_duration = float(config.MAMBA_SKILL_STUN_DURATION)
+        self.mamba_upgrade_level = 0
+        self.skill_cast_key: str | None = None
+        self.skill_cast_timer = 0.0
+        self.skill_cast_total = 0.0
+        self.skill_cast_direction = pygame.Vector2()
+        self.mamba_impact_timer = 0.0
+        self.mamba_impact_total = 0.0
+        self.mamba_impact_direction = pygame.Vector2()
+        self.mamba_impact_center = self.player_pos.copy()
         self.active_skill_key = "pulse"
         self.skill_timer = 0.0
         self.active_skill_name = "电弧脉冲"
@@ -241,9 +254,9 @@ class Game:
             return
         self.sounds = {
             "ui_click": self._load_sound("ui_click.wav"),
-            "prism_lance_fire": self._load_sound("prism_lance_fire.wav", volume=0.4),
-            "pulse_laser_fire": self._load_sound("pulse_laser_fire.wav", volume=0.45),
-            "pulse_wave": self._load_sound("pulse_wave.wav"),
+            "prism_lance_fire": self._load_sound("prism_lance_fire.wav", volume=0.32),
+            "pulse_laser_fire": self._load_sound("pulse_laser_fire.wav", volume=0.36),
+            "pulse_wave": None,
             "switch": self._load_sound("switch.wav"),
             "boom": self._load_sound("boom.wav", volume=0.5),
         }
@@ -404,8 +417,15 @@ class Game:
         remaining: list[GasCloud] = []
         for cloud in self.gas_clouds:
             cloud.ttl -= dt
+            cloud.activation_delay = max(0.0, cloud.activation_delay - dt)
+            if cloud.target_radius > cloud.radius and cloud.growth_speed > 0:
+                cloud.radius = min(
+                    cloud.target_radius, cloud.radius + cloud.growth_speed * dt
+                )
+            if cloud.activation_delay > 0:
+                cloud.tick_timer = max(cloud.tick_timer, cloud.activation_delay)
             cloud.tick_timer -= dt
-            if cloud.tick_timer <= 0:
+            if cloud.activation_delay <= 0 and cloud.tick_timer <= 0:
                 cloud.tick_timer = 0.35
                 for enemy in self.enemies[:]:
                     if enemy.pos.distance_to(cloud.pos) <= cloud.radius + enemy.radius:
@@ -429,6 +449,32 @@ class Game:
             if cloud.ttl > 0:
                 remaining.append(cloud)
         self.gas_clouds = remaining
+
+    def make_gas_cloud(
+        self,
+        pos: pygame.Vector2,
+        target_radius: float,
+        ttl: float,
+        damage: float,
+        *,
+        start_ratio: float = 0.22,
+        growth_time: float = 0.52,
+        activation_delay: float = 0.34,
+    ) -> GasCloud:
+        initial_radius = max(16.0, target_radius * start_ratio)
+        growth_speed = max(
+            0.0, (target_radius - initial_radius) / max(0.01, growth_time)
+        )
+        return GasCloud(
+            pos=pos.copy(),
+            radius=initial_radius,
+            ttl=ttl,
+            damage=damage,
+            tick_timer=activation_delay,
+            target_radius=target_radius,
+            growth_speed=growth_speed,
+            activation_delay=activation_delay,
+        )
 
     def update_explosion_waves(self, dt: float) -> None:
         remaining: list[ExplosionWave] = []
@@ -487,6 +533,9 @@ class Game:
     def basketball_upgrade_cap_reached(self) -> bool:
         return self.basketball_upgrade_level >= config.BASKETBALL_UPGRADE_CAP
 
+    def mamba_upgrade_cap_reached(self) -> bool:
+        return self.mamba_upgrade_level >= config.MAMBA_UPGRADE_CAP
+
     def configure_character_skill(self, skill_key: str) -> None:
         skill = self.character_skill_data(skill_key)
         self.active_skill_key = skill.key
@@ -497,6 +546,7 @@ class Game:
         return {
             "pulse": self.try_pulse,
             "basketball": self.try_basketball_skill,
+            "mamba_smash": self.try_mamba_smash,
         }.get(self.active_skill_key)
 
     def active_skill_status_text(self) -> str:
@@ -666,6 +716,7 @@ class Game:
             (upgrade_key == "multishot" and self.multishot >= self.multishot_cap())
             or (upgrade_key == "ricochet" and self.player_bullet_bounces >= self.ricochet_cap())
             or (upgrade_key == "basketball_training" and self.basketball_upgrade_cap_reached())
+            or (upgrade_key == "what_can_i_say" and self.mamba_upgrade_cap_reached())
             or (upgrade_key == "accuracy" and self.player_spread <= 0.004)
             or (upgrade_key == "shotgun_range" and (not self.is_shotgun_weapon() or self.shotgun_range_cap_reached()))
             or (upgrade_key == "rocket_blast" and (not self.is_rocket_weapon() or self.rocket_blast_cap_reached()))
@@ -1485,6 +1536,13 @@ class Game:
                 self.basketball_speed_scale += config.BASKETBALL_UPGRADE_SPEED_STEP
             else:
                 applied_name = f"{upgrade.name}（当前技能不可用）"
+        elif upgrade.key == "what_can_i_say":
+            if self.active_skill_key == "mamba_smash" and not self.mamba_upgrade_cap_reached():
+                self.mamba_upgrade_level += 1
+                self.mamba_skill_damage += config.MAMBA_UPGRADE_DAMAGE_STEP
+                self.mamba_skill_stun_duration += config.MAMBA_UPGRADE_STUN_STEP
+            else:
+                applied_name = f"{upgrade.name}（当前技能不可用）"
         elif upgrade.key == "magnet":
             self.pickup_radius += 16
         elif upgrade.key == "pulse":
@@ -1733,7 +1791,6 @@ class Game:
         if tag == "reactor" or (
             tag == "normal" and theme == "\u53cd\u5e94\u5806\u5ba4"
         ):
-            self.play_sound("boom")
             profile = hazard_profile("reactor", obstacle.rect)
             blast_radius = profile.radius
             blast_damage = profile.damage
@@ -1765,14 +1822,15 @@ class Game:
         elif tag == "toxic" or (
             tag == "normal" and theme == "\u5e9f\u6599\u5806\u573a"
         ):
-            self.play_sound("boom")
             profile = hazard_profile("toxic", obstacle.rect)
             self.gas_clouds.append(
-                GasCloud(
-                    pos=impact_pos.copy(),
-                    radius=profile.radius,
-                    ttl=profile.ttl,
-                    damage=profile.damage,
+                self.make_gas_cloud(
+                    impact_pos.copy(),
+                    profile.radius,
+                    profile.ttl,
+                    profile.damage,
+                    growth_time=0.56,
+                    activation_delay=0.34,
                 )
             )
             self.spawn_particles(
@@ -2428,6 +2486,7 @@ class Game:
         self.room_transition_cooldown = max(0.0, self.room_transition_cooldown - dt)
         self.enemy_pause_timer = max(0.0, self.enemy_pause_timer - dt)
         self.update_player(dt)
+        self.update_active_skill_effects(dt)
         self.update_bullets(dt)
         if self.enemy_pause_timer <= 0:
             self.update_enemies(dt)
@@ -2462,11 +2521,14 @@ class Game:
             float(keys[pygame.K_d]) - float(keys[pygame.K_a]),
             float(keys[pygame.K_s]) - float(keys[pygame.K_w]),
         )
+        move_speed = self.player_speed
+        if self.skill_cast_key == "mamba_smash" and self.skill_cast_timer > 0:
+            move_speed *= config.MAMBA_SKILL_STARTUP_MOVE_MULT
         if move.length_squared() > 0:
             move = move.normalize()
             self.last_move = move.copy()
             self.move_circle_with_collisions(
-                self.player_pos, config.PLAYER_RADIUS, move * self.player_speed * dt
+                self.player_pos, config.PLAYER_RADIUS, move * move_speed * dt
             )
         else:
             self.move_circle_with_collisions(
@@ -2475,7 +2537,7 @@ class Game:
 
         mouse_pos = pygame.Vector2(pygame.mouse.get_pos())
         pressed = pygame.mouse.get_pressed(num_buttons=3)[0]
-        if pressed and self.fire_timer <= 0:
+        if self.skill_cast_key is None and pressed and self.fire_timer <= 0:
             aim = mouse_pos - self.player_pos
             if aim.length_squared() > 0:
                 self.spawn_burst(aim.normalize())
@@ -2509,10 +2571,23 @@ class Game:
             return
         self.message = f"{self.active_skill_name} \u6682\u4e0d\u53ef\u7528"
 
+
+    def current_skill_aim_direction(self) -> pygame.Vector2:
+        aim = pygame.Vector2(pygame.mouse.get_pos()) - self.player_pos
+        if aim.length_squared() <= 0:
+            aim = (
+                self.last_move
+                if self.last_move.length_squared() > 0
+                else pygame.Vector2(1, 0)
+            )
+        return aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
+
     def try_pulse(self) -> None:
         if self.skill_timer > 0:
             return
         self.skill_timer = self.active_skill_cooldown()
+        self.pulse_effect_total = config.PULSE_EFFECT_DURATION
+        self.pulse_effect_timer = self.pulse_effect_total
         hits = 0
         for enemy in self.enemies[:]:
             dist = enemy.pos.distance_to(self.player_pos)
@@ -2536,6 +2611,14 @@ class Game:
                 )
                 if enemy.hp <= 0:
                     self.kill_enemy(enemy)
+        self.spawn_particles(
+            self.player_pos.copy(),
+            config.BULLET_SHOCK_COLOR,
+            16,
+            1.05,
+            (1.6, 4.2),
+            (0.10, 0.24),
+        )
         self.floaters.append(
             FloatingText(
                 self.player_pos.copy(),
@@ -2548,10 +2631,7 @@ class Game:
     def try_basketball_skill(self) -> None:
         if self.skill_timer > 0:
             return
-        aim = pygame.Vector2(pygame.mouse.get_pos()) - self.player_pos
-        if aim.length_squared() <= 0:
-            aim = self.last_move if self.last_move.length_squared() > 0 else pygame.Vector2(1, 0)
-        direction = aim.normalize() if aim.length_squared() > 0 else pygame.Vector2(1, 0)
+        direction = self.current_skill_aim_direction()
         self.skill_timer = self.active_skill_cooldown()
         spawn_pos = self.player_pos.copy() + direction * (config.PLAYER_RADIUS + config.BASKETBALL_RADIUS + 2)
         self.spawn_projectile(
@@ -2573,6 +2653,222 @@ class Game:
         )
         self.spawn_particles(spawn_pos.copy(), config.BASKETBALL_COLOR, 8, 0.92, (1.6, 3.8), (0.12, 0.24))
         self.floaters.append(FloatingText(self.player_pos.copy(), "篮球出手", config.BASKETBALL_COLOR, 0.45))
+
+
+    def try_mamba_smash(self) -> None:
+        if self.skill_timer > 0 or self.skill_cast_key is not None:
+            return
+        direction = self.current_skill_aim_direction()
+        self.skill_timer = self.active_skill_cooldown()
+        self.skill_cast_key = "mamba_smash"
+        self.skill_cast_direction = direction.copy()
+        self.skill_cast_total = config.MAMBA_SKILL_STARTUP
+        self.skill_cast_timer = self.skill_cast_total
+        self.mamba_impact_timer = 0.0
+        self.fire_timer = max(self.fire_timer, config.MAMBA_SKILL_STARTUP)
+        windup_pos = self.player_pos.copy() + direction * (config.PLAYER_RADIUS + 12)
+        self.spawn_particles(
+            windup_pos,
+            config.MAMBA_GLOW_COLOR,
+            10,
+            0.9,
+            (1.4, 3.8),
+            (0.10, 0.22),
+        )
+        self.spawn_particles(
+            self.player_pos.copy(),
+            config.MAMBA_TRIM_COLOR,
+            6,
+            0.72,
+            (1.0, 2.4),
+            (0.08, 0.18),
+        )
+        self.floaters.append(
+            FloatingText(
+                self.player_pos.copy() + pygame.Vector2(0, -22),
+                "曼巴起势",
+                config.MAMBA_JERSEY_COLOR,
+                0.24,
+            )
+        )
+
+    def update_active_skill_effects(self, dt: float) -> None:
+        self.pulse_effect_timer = max(0.0, self.pulse_effect_timer - dt)
+        self.mamba_impact_timer = max(0.0, self.mamba_impact_timer - dt)
+        if self.skill_cast_key is None:
+            self.skill_cast_timer = 0.0
+            return
+        self.skill_cast_timer = max(0.0, self.skill_cast_timer - dt)
+        if self.skill_cast_timer > 0:
+            return
+        cast_key = self.skill_cast_key
+        self.skill_cast_key = None
+        if cast_key == "mamba_smash":
+            self.execute_mamba_smash()
+        self.skill_cast_direction = pygame.Vector2()
+        self.skill_cast_total = 0.0
+
+    def damage_obstacles_in_cone(
+        self,
+        origin: pygame.Vector2,
+        direction: pygame.Vector2,
+        range_limit: float,
+        half_angle: float,
+        damage: float,
+        color: tuple[int, int, int],
+    ) -> int:
+        cone_cos = math.cos(half_angle)
+        hits = 0
+        for obstacle in self.obstacles[:]:
+            if not obstacle.destructible:
+                continue
+            target = pygame.Vector2(obstacle.rect.center)
+            offset = target - origin
+            size_bonus = max(obstacle.rect.width, obstacle.rect.height) * 0.45
+            distance = offset.length()
+            if distance > range_limit + size_bonus:
+                continue
+            if (
+                offset.length_squared() > 0
+                and direction.dot(offset.normalize()) < cone_cos
+            ):
+                continue
+            dealt = max(18.0, damage)
+            destroyed = self.apply_obstacle_damage(obstacle, dealt)
+            hits += 1
+            self.spawn_particles(
+                target.copy(),
+                color,
+                5 if destroyed else 3,
+                0.78,
+                (1.0, 2.8),
+                (0.08, 0.18),
+            )
+        return hits
+
+    def execute_mamba_smash(self) -> None:
+        direction = (
+            self.skill_cast_direction.normalize()
+            if self.skill_cast_direction.length_squared() > 0
+            else self.current_skill_aim_direction()
+        )
+        self.move_circle_with_collisions(
+            self.player_pos,
+            config.PLAYER_RADIUS,
+            direction * config.MAMBA_SKILL_LUNGE_DISTANCE,
+        )
+        impact_center = self.player_pos.copy() + direction * (config.MAMBA_SKILL_RANGE * 0.62)
+        cone_cos = math.cos(config.MAMBA_SKILL_HALF_ANGLE)
+        hits = 0
+        obstacle_hits = self.damage_obstacles_in_cone(
+            self.player_pos,
+            direction,
+            config.MAMBA_SKILL_RANGE,
+            config.MAMBA_SKILL_HALF_ANGLE + 0.10,
+            self.mamba_skill_damage * 1.1,
+            config.MAMBA_IMPACT_COLOR,
+        )
+        for enemy in self.enemies[:]:
+            offset = enemy.pos - self.player_pos
+            distance = offset.length()
+            if distance > config.MAMBA_SKILL_RANGE + enemy.radius:
+                continue
+            if offset.length_squared() > 0 and direction.dot(offset.normalize()) < cone_cos:
+                continue
+            hits += 1
+            enemy.hp -= self.mamba_skill_damage
+            push_dir = offset if offset.length_squared() > 0 else direction
+            if push_dir.length_squared() > 0:
+                push_dir = push_dir.normalize() + direction * 0.22
+            if push_dir.length_squared() <= 0:
+                push_dir = direction.copy()
+            push = push_dir.normalize() * (
+                config.MAMBA_SKILL_KNOCKBACK / max(0.55, enemy.knockback_resist)
+            )
+            self.move_circle_with_collisions(enemy.pos, enemy.radius, push)
+            stun_duration = self.mamba_skill_stun_duration / max(
+                1.0, enemy.knockback_resist * 0.92
+            )
+            if enemy.is_boss:
+                stun_duration *= 0.45
+            enemy.stun_timer = max(enemy.stun_timer, stun_duration)
+            enemy.action_state = ""
+            enemy.action_timer = 0.0
+            enemy.aim_direction = pygame.Vector2()
+            enemy.shoot_timer = max(enemy.shoot_timer, min(0.28, stun_duration))
+            self.floaters.append(
+                FloatingText(
+                    enemy.pos.copy(),
+                    f"{int(self.mamba_skill_damage)}",
+                    config.MAMBA_IMPACT_COLOR,
+                    0.48,
+                )
+            )
+            self.spawn_particles(
+                enemy.pos.copy(),
+                config.MAMBA_IMPACT_COLOR,
+                9,
+                1.18,
+                (1.6, 4.8),
+                (0.10, 0.24),
+            )
+            self.spawn_particles(
+                enemy.pos.copy(),
+                config.MAMBA_TRIM_COLOR,
+                6,
+                0.82,
+                (1.1, 3.2),
+                (0.08, 0.18),
+            )
+            if enemy.hp <= 0:
+                self.kill_enemy(enemy)
+        self.mamba_impact_center = impact_center
+        self.mamba_impact_direction = direction.copy()
+        self.mamba_impact_total = config.MAMBA_SKILL_IMPACT_TTL
+        self.mamba_impact_timer = self.mamba_impact_total
+        self.spawn_explosion_wave(
+            impact_center,
+            config.MAMBA_SKILL_IMPACT_RADIUS,
+            config.MAMBA_IMPACT_COLOR,
+            ttl=0.22,
+        )
+        self.spawn_explosion_wave(
+            self.player_pos.copy() + direction * 74,
+            config.MAMBA_SKILL_IMPACT_RADIUS * 0.66,
+            config.MAMBA_GLOW_COLOR,
+            ttl=0.16,
+        )
+        self.spawn_particles(
+            impact_center.copy(),
+            config.MAMBA_IMPACT_COLOR,
+            18,
+            1.85,
+            (2.0, 5.4),
+            (0.12, 0.30),
+        )
+        self.spawn_particles(
+            impact_center.copy(),
+            config.MAMBA_JERSEY_COLOR,
+            12,
+            1.36,
+            (1.4, 4.0),
+            (0.10, 0.24),
+        )
+        self.play_sound("boom")
+        self.add_screen_shake(
+            config.MAMBA_SKILL_SHAKE, config.MAMBA_SKILL_SHAKE_DURATION
+        )
+        total_hits = hits + obstacle_hits
+        floater_text = f"曼巴重击 {total_hits}" if total_hits else "重击落空"
+        floater_color = config.MAMBA_GLOW_COLOR if total_hits else config.MUTED_TEXT
+        self.floaters.append(
+            FloatingText(
+                self.player_pos.copy() + direction * 34,
+                floater_text,
+                floater_color,
+                0.58,
+            )
+        )
 
     def update_laser_traces(self, dt: float) -> None:
         remaining: list[LaserTrace] = []
@@ -2943,7 +3239,7 @@ class Game:
         for idx in range(self.multishot):
             lane = idx // 2
             base = 0.22 + lane * 0.06
-            side = 1 if (self.shot_serial + idx) % 2 == 0 else -1
+            side = 1 if idx % 2 == 0 else -1
             angles.append(side * base)
         return angles
 
@@ -2952,16 +3248,43 @@ class Game:
 
     def player_projectile_angles(self) -> list[float]:
         if not self.is_shotgun_weapon():
+            if self.selected_weapon.key != "rail" and self.multishot > 0:
+                total_projectiles = 1 + self.multishot
+                spacing = 0.22
+                center_index = (total_projectiles - 1) / 2
+                return [
+                    (idx - center_index) * spacing
+                    for idx in range(total_projectiles)
+                ]
             return [0.0, *self.extra_multishot_angles()]
         pellets = self.player_shotgun_pellets
         if pellets <= 1:
             base_angles = [0.0]
         else:
-            step = (self.player_shotgun_spread * 2) / max(1, pellets - 1)
-            base_angles = [
-                -self.player_shotgun_spread + step * idx for idx in range(pellets)
-            ]
+            base_angles = []
+            for idx in range(pellets):
+                sample = -1.0 + 2.0 * idx / max(1, pellets - 1)
+                curved = math.copysign(
+                    abs(sample) ** config.SHOTGUN_CLUSTER_EXPONENT, sample
+                )
+                base_angles.append(curved * self.player_shotgun_spread)
         return [*base_angles, *self.extra_multishot_angles()]
+
+    def shotgun_pellet_velocity_profile(self, angle: float) -> tuple[float, float]:
+        spread_ratio = min(
+            1.0, abs(angle) / max(0.001, self.player_shotgun_spread or 0.001)
+        )
+        center_bonus = (1.0 - spread_ratio) * config.SHOTGUN_PELLET_CENTER_SPEED_BONUS
+        speed_scale = 1.0 + center_bonus + self.rng.uniform(
+            -config.SHOTGUN_PELLET_SPEED_VARIANCE,
+            config.SHOTGUN_PELLET_SPEED_VARIANCE,
+        )
+        ttl_scale = 1.0 + self.rng.uniform(
+            -config.SHOTGUN_PELLET_TTL_VARIANCE,
+            config.SHOTGUN_PELLET_TTL_VARIANCE,
+        )
+        ttl_scale += center_bonus * 0.25
+        return max(0.72, speed_scale), max(0.78, ttl_scale)
 
     def spawn_bullet_barrel_burst(
         self, origin: pygame.Vector2, rect: pygame.Rect
@@ -3162,7 +3485,29 @@ class Game:
             self.move_circle_with_collisions(self.player_pos, config.PLAYER_RADIUS, recoil)
             self.shot_serial += 1
             return
-        projectile_color = config.SHOTGUN_PELLET_COLOR if self.is_shotgun_weapon() else config.BULLET_COLOR
+        shotgun_weapon = self.is_shotgun_weapon()
+        projectile_color = (
+            config.SHOTGUN_PELLET_COLOR if shotgun_weapon else config.BULLET_COLOR
+        )
+        if shotgun_weapon:
+            muzzle = self.player_pos.copy() + direction * 18
+            self.spawn_particles(
+                muzzle.copy(),
+                config.SHOTGUN_PELLET_COLOR,
+                8,
+                0.92,
+                (1.4, 3.6),
+                (0.06, 0.18),
+            )
+            self.spawn_particles(
+                muzzle.copy() - direction * 4,
+                config.SHOTGUN_COLOR,
+                5,
+                0.76,
+                (1.0, 2.8),
+                (0.08, 0.18),
+            )
+            self.add_screen_shake(1.3, 0.05)
         for angle in self.player_projectile_angles():
             fired = self.apply_projectile_offset(direction.rotate_rad(angle))
             lateral = pygame.Vector2(-fired.y, fired.x)
@@ -3170,12 +3515,26 @@ class Game:
                 -self.player_spread * 180, self.player_spread * 180
             )
             damage, crit = self.roll_player_hit(self.player_damage)
+            projectile_speed = self.player_projectile_speed
+            projectile_ttl = self.player_projectile_ttl
+            projectile_style = "bullet"
+            trail_color = None
+            trail_interval = 0.0
+            decay_visual = False
+            if shotgun_weapon:
+                speed_scale, ttl_scale = self.shotgun_pellet_velocity_profile(angle)
+                projectile_speed *= speed_scale
+                projectile_ttl *= ttl_scale
+                projectile_style = "shotgun_pellet"
+                trail_color = config.SHOTGUN_TRAIL_COLOR
+                trail_interval = config.SHOTGUN_TRAIL_INTERVAL
+                decay_visual = True
             self.spawn_projectile(
                 self.player_pos.copy() + spawn_offset,
                 fired,
                 damage,
-                speed=self.player_projectile_speed,
-                ttl=self.player_projectile_ttl,
+                speed=projectile_speed,
+                ttl=projectile_ttl,
                 radius=self.player_projectile_radius,
                 pierce=self.bullet_pierce,
                 bounces_left=self.player_bullet_bounces,
@@ -3183,6 +3542,10 @@ class Game:
                 color=projectile_color,
                 crit=crit,
                 knockback=self.player_projectile_knockback,
+                style=projectile_style,
+                decay_visual=decay_visual,
+                trail_color=trail_color,
+                trail_interval=trail_interval,
             )
         self.shot_serial += 1
 
@@ -3382,11 +3745,13 @@ class Game:
         if enemy.kind == "toxic_bloater":
             profile = hazard_profile("toxic", self.enemy_hazard_rect(enemy))
             self.gas_clouds.append(
-                GasCloud(
-                    pos=enemy.pos.copy(),
-                    radius=profile.radius,
-                    ttl=profile.ttl,
-                    damage=profile.damage,
+                self.make_gas_cloud(
+                    enemy.pos.copy(),
+                    profile.radius,
+                    profile.ttl,
+                    profile.damage,
+                    growth_time=0.60,
+                    activation_delay=0.38,
                 )
             )
             self.spawn_particles(
@@ -3647,10 +4012,16 @@ class Game:
 
     def update_enemies(self, dt: float) -> None:
         for enemy in self.enemies[:]:
+            enemy.stun_timer = max(0.0, enemy.stun_timer - dt)
             if enemy.shoot_cooldown > 0:
                 enemy.shoot_timer -= dt
             enemy.special_timer = max(0.0, enemy.special_timer - dt)
             enemy.alt_special_timer = max(0.0, enemy.alt_special_timer - dt)
+            if enemy.stun_timer > 0:
+                enemy.action_state = ""
+                enemy.action_timer = 0.0
+                enemy.aim_direction = pygame.Vector2()
+                continue
             delta_to_player = self.player_pos - enemy.pos
             has_los = self.has_line_of_sight(
                 enemy.pos, self.player_pos, max(6, enemy.radius // 2)
@@ -4087,7 +4458,12 @@ class Game:
 
         for cloud in self.gas_clouds:
             radius = int(cloud.radius)
-            alpha = max(40, min(120, int(120 * (cloud.ttl / 2.6))))
+            growth_ratio = (
+                1.0
+                if cloud.target_radius <= 0
+                else max(0.18, min(1.0, cloud.radius / cloud.target_radius))
+            )
+            alpha = max(32, min(122, int(112 * (cloud.ttl / 2.6) * growth_ratio + 24)))
             surf = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
             pygame.draw.circle(
                 surf, (110, 190, 90, alpha), (radius + 4, radius + 4), radius
@@ -4096,9 +4472,18 @@ class Game:
                 surf,
                 (150, 220, 130, alpha // 2),
                 (radius + 4, radius + 4),
-                max(10, radius - 10),
+                max(8, int(radius * 0.72)),
                 3,
             )
+            if cloud.activation_delay > 0:
+                warning_radius = max(10, int(radius * (1.08 + 0.16 * growth_ratio)))
+                pygame.draw.circle(
+                    surf,
+                    (190, 255, 170, max(36, alpha // 2)),
+                    (radius + 4, radius + 4),
+                    warning_radius,
+                    2,
+                )
             self.screen.blit(surf, surf.get_rect(center=cloud.pos))
 
         for obstacle in self.obstacles:
@@ -4196,6 +4581,17 @@ class Game:
                 pygame.draw.circle(self.screen, config.ROCKET_CORE_COLOR, bullet.pos, max(2, radius - 3))
                 exhaust = tail - heading * 4
                 pygame.draw.circle(self.screen, config.ROCKET_EXPLOSION_COLOR, exhaust, max(2, radius // 2 + 1))
+            elif bullet.style == "shotgun_pellet" and bullet.velocity.length_squared() > 0:
+                heading = bullet.velocity.normalize()
+                tail = bullet.pos - heading * max(5, radius * 2.6)
+                pygame.draw.line(
+                    self.screen,
+                    config.SHOTGUN_TRAIL_COLOR,
+                    tail,
+                    bullet.pos,
+                    max(2, radius),
+                )
+                pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
             elif bullet.style == "basketball":
                 center = (int(bullet.pos.x), int(bullet.pos.y))
                 pygame.draw.circle(self.screen, bullet.color, center, radius)
@@ -4234,25 +4630,17 @@ class Game:
                 (enemy.pos.x - enemy.radius, top, width * hp_ratio, 5),
                 border_radius=3,
             )
+            if enemy.stun_timer > 0:
+                self.draw_enemy_stun_marker(enemy)
 
+        self.draw_pulse_skill_effects()
+        self.draw_mamba_skill_effects()
         self.draw_laser_traces()
 
-        player_color = (
-            config.PLAYER_HIT_COLOR if self.iframes > 0 else config.PLAYER_COLOR
-        )
-        pygame.draw.circle(
-            self.screen, player_color, self.player_pos, config.PLAYER_RADIUS
-        )
-        self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
-        if self.active_skill_key == "pulse" and self.skill_timer > self.active_skill_cooldown() - 0.18:
-            pygame.draw.circle(self.screen, config.BULLET_SHOCK_COLOR, self.player_pos, int(self.pulse_radius), 3)
+        self.draw_player_avatar()
         mouse = pygame.Vector2(pygame.mouse.get_pos())
         aim = mouse - self.player_pos
-        if aim.length_squared() > 0:
-            aim.scale_to_length(28)
-            pygame.draw.line(
-                self.screen, (200, 245, 230), self.player_pos, self.player_pos + aim, 4
-            )
+        self.draw_player_weapon(aim)
 
         for particle in self.particles:
             pygame.draw.circle(
@@ -4276,6 +4664,299 @@ class Game:
             self.screen.fill(config.BACKGROUND)
             self.screen.blit(frame, offset)
         pygame.display.flip()
+
+    def draw_pulse_skill_effects(self) -> None:
+        if self.pulse_effect_timer <= 0 or self.pulse_effect_total <= 0:
+            return
+        progress = 1.0 - self.pulse_effect_timer / max(0.01, self.pulse_effect_total)
+        eased = 1.0 - (1.0 - progress) ** 2.35
+        radius = config.PULSE_EFFECT_INNER_RADIUS + (
+            self.pulse_radius - config.PULSE_EFFECT_INNER_RADIUS
+        ) * eased
+        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+        ring_rect = pygame.Rect(0, 0, int(radius * 2), int(radius * 2))
+        ring_rect.center = (int(self.player_pos.x), int(self.player_pos.y))
+        ring_alpha = int(120 + 80 * (1.0 - progress))
+        ring_width = max(3, int(8 - eased * 4))
+        pygame.draw.circle(
+            overlay,
+            (*config.BULLET_SHOCK_COLOR, max(48, ring_alpha // 3)),
+            self.player_pos,
+            int(radius),
+        )
+        pygame.draw.circle(
+            overlay,
+            (*config.LASER_LIGHT_COLOR, ring_alpha),
+            self.player_pos,
+            int(radius),
+            ring_width,
+        )
+        phase = pygame.time.get_ticks() * 0.01
+        for idx in range(config.PULSE_EFFECT_ARCS):
+            start_angle = phase + idx * (math.tau / config.PULSE_EFFECT_ARCS)
+            arc_len = 0.44 + 0.10 * math.sin(phase + idx * 0.7)
+            pygame.draw.arc(
+                overlay,
+                (*config.LASER_TRACE_CORE, 190),
+                ring_rect,
+                start_angle,
+                start_angle + arc_len,
+                max(2, ring_width - 1),
+            )
+            direction = pygame.Vector2(math.cos(start_angle), math.sin(start_angle))
+            tangent = pygame.Vector2(-direction.y, direction.x)
+            inner = self.player_pos + direction * max(
+                10.0, radius * (0.22 + 0.05 * idx)
+            )
+            outer = self.player_pos + direction * radius
+            zig = outer + tangent * (6 if idx % 2 == 0 else -6)
+            pygame.draw.lines(
+                overlay,
+                (*config.BULLET_SHOCK_COLOR, 170),
+                False,
+                (inner, zig, outer),
+                2,
+            )
+        self.screen.blit(overlay, (0, 0))
+
+    def draw_player_weapon(self, aim: pygame.Vector2) -> None:
+        direction = (
+            aim.normalize()
+            if aim.length_squared() > 0
+            else (
+                self.last_move.normalize()
+                if self.last_move.length_squared() > 0
+                else pygame.Vector2(1, 0)
+            )
+        )
+        lateral = pygame.Vector2(-direction.y, direction.x)
+        handle = self.player_pos + direction * (config.PLAYER_RADIUS - 3)
+        if self.selected_weapon.key == "shotgun":
+            length = 24
+            half_width = 4.6
+            gun_color = config.SHOTGUN_COLOR
+        elif self.selected_weapon.key == "rocket":
+            length = 25
+            half_width = 5.2
+            gun_color = config.ROCKET_COLOR
+        elif self.selected_weapon.key == "laser_lance":
+            length = 28
+            half_width = 4.0
+            gun_color = config.LASER_HEAVY_COLOR
+        elif self.selected_weapon.key == "laser_burst":
+            length = 24
+            half_width = 3.6
+            gun_color = config.LASER_LIGHT_COLOR
+        elif self.selected_weapon.key == "rail":
+            length = 26
+            half_width = 3.6
+            gun_color = config.BULLET_COLOR
+        else:
+            length = 23
+            half_width = 3.2
+            gun_color = config.BULLET_COLOR
+        butt = handle - direction * 8
+        muzzle = handle + direction * length
+        polygon = (
+            butt - lateral * (half_width * 0.72),
+            handle - lateral * half_width,
+            muzzle - lateral * (half_width * 0.62),
+            muzzle + lateral * (half_width * 0.62),
+            handle + lateral * half_width,
+            butt + lateral * (half_width * 0.72),
+        )
+        outline = config.MAMBA_OUTLINE_COLOR if self.selected_character.key == "mamba" else (26, 30, 40)
+        pygame.draw.polygon(self.screen, outline, polygon)
+        pygame.draw.polygon(self.screen, gun_color, polygon, 0)
+        pygame.draw.polygon(self.screen, outline, polygon, 2)
+        grip = (
+            handle - direction * 4 + lateral * (half_width * 0.72),
+            handle - direction * 10 + lateral * (half_width * 0.2),
+            handle - direction * 7 - lateral * (half_width * 0.4),
+        )
+        pygame.draw.polygon(self.screen, outline, grip)
+        if self.selected_weapon.key == "rocket":
+            pygame.draw.circle(
+                self.screen, config.ROCKET_CORE_COLOR, muzzle, max(2, int(half_width))
+            )
+
+    def draw_player_avatar(self) -> None:
+        if self.selected_character.key != "mamba":
+            player_color = (
+                config.PLAYER_HIT_COLOR if self.iframes > 0 else config.PLAYER_COLOR
+            )
+            pygame.draw.circle(
+                self.screen, player_color, self.player_pos, config.PLAYER_RADIUS
+            )
+            self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
+            return
+
+        pos = self.player_pos
+        radius = config.PLAYER_RADIUS
+        outline_color = config.MAMBA_OUTLINE_COLOR
+        upper_color = (
+            config.MAMBA_GLOW_COLOR
+            if self.iframes > 0
+            else config.MAMBA_UPPER_COLOR
+        )
+        lower_color = (
+            config.MAMBA_GLOW_COLOR
+            if self.iframes > 0
+            else config.MAMBA_JERSEY_COLOR
+        )
+        inner_radius = max(4, radius - 3)
+        pygame.draw.circle(self.screen, outline_color, pos, radius)
+        pygame.draw.circle(self.screen, lower_color, pos, inner_radius)
+        upper_rect = pygame.Rect(
+            int(pos.x - inner_radius),
+            int(pos.y - inner_radius),
+            int(inner_radius * 2),
+            int(inner_radius * 1.08),
+        )
+        pygame.draw.ellipse(self.screen, upper_color, upper_rect)
+        split_y = int(pos.y + radius * 0.02)
+        pygame.draw.line(
+            self.screen,
+            outline_color,
+            (int(pos.x - inner_radius + 2), split_y),
+            (int(pos.x + inner_radius - 2), split_y),
+            2,
+        )
+
+        visor = pygame.Rect(0, 0, int(radius * 1.18), max(8, int(radius * 0.62)))
+        visor.center = (int(pos.x), int(pos.y - radius * 0.10))
+        pygame.draw.ellipse(self.screen, outline_color, visor)
+        pygame.draw.ellipse(
+            self.screen, config.MAMBA_GLOW_COLOR, visor.inflate(-6, -4), 1
+        )
+
+        shoulder = (
+            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.04)),
+            (int(pos.x - radius * 0.22), int(pos.y - radius * 0.48)),
+            (int(pos.x + radius * 0.24), int(pos.y - radius * 0.18)),
+            (int(pos.x + radius * 0.04), int(pos.y + radius * 0.02)),
+            (int(pos.x - radius * 0.52), int(pos.y + radius * 0.06)),
+        )
+        pygame.draw.polygon(self.screen, config.MAMBA_TRIM_COLOR, shoulder)
+        pygame.draw.circle(
+            self.screen,
+            outline_color,
+            (int(pos.x - radius * 0.60), int(pos.y - radius * 0.02)),
+            2,
+        )
+        pygame.draw.circle(
+            self.screen,
+            outline_color,
+            (int(pos.x + radius * 0.60), int(pos.y - radius * 0.02)),
+            2,
+        )
+
+        number = self.tiny_font.render("24", True, (248, 248, 250))
+        number_rect = number.get_rect(
+            center=(int(pos.x), int(pos.y + radius * 0.42))
+        )
+        self.screen.blit(number, number_rect)
+
+    def draw_enemy_stun_marker(self, enemy: Enemy) -> None:
+        phase = pygame.time.get_ticks() * 0.008
+        center = enemy.pos + pygame.Vector2(0, -enemy.radius - 8)
+        orbit_radius = max(6, enemy.radius * 0.42)
+        for idx in range(3):
+            angle = phase + idx * (math.tau / 3)
+            point = center + pygame.Vector2(
+                math.cos(angle), math.sin(angle)
+            ) * orbit_radius
+            pygame.draw.circle(self.screen, config.MAMBA_STUN_COLOR, point, 3)
+            pygame.draw.circle(self.screen, config.MAMBA_TRIM_COLOR, point, 3, 1)
+
+    def draw_mamba_skill_effects(self) -> None:
+        if (
+            self.skill_cast_key != "mamba_smash"
+            and self.mamba_impact_timer <= 0
+        ):
+            return
+
+        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+
+        if (
+            self.skill_cast_key == "mamba_smash"
+            and self.skill_cast_timer > 0
+            and self.skill_cast_total > 0
+        ):
+            life = self.skill_cast_timer / max(0.01, self.skill_cast_total)
+            direction = (
+                self.skill_cast_direction.normalize()
+                if self.skill_cast_direction.length_squared() > 0
+                else pygame.Vector2(1, 0)
+            )
+            side = pygame.Vector2(-direction.y, direction.x)
+            base = self.player_pos + direction * 10
+            tip = self.player_pos + direction * (config.MAMBA_SKILL_RANGE * 0.88)
+            half_width = 24 + (1.0 - life) * 24
+            polygon = (
+                base - side * 18,
+                tip - side * half_width,
+                tip + side * half_width,
+                base + side * 18,
+            )
+            pygame.draw.polygon(
+                overlay, (*config.MAMBA_JERSEY_COLOR, int(38 + 54 * life)), polygon
+            )
+            pygame.draw.polygon(
+                overlay, (*config.MAMBA_TRIM_COLOR, int(160 + 55 * life)), polygon, 3
+            )
+            for idx in range(3):
+                line_pos = 0.28 + idx * 0.17
+                center = base.lerp(tip, line_pos)
+                width = 14 + idx * 8
+                start = center - side * width
+                end = center + side * width
+                pygame.draw.line(
+                    overlay,
+                    (*config.MAMBA_TRIM_COLOR, int(120 + 45 * life)),
+                    start,
+                    end,
+                    3,
+                )
+
+        if self.mamba_impact_timer > 0 and self.mamba_impact_total > 0:
+            life = self.mamba_impact_timer / max(0.01, self.mamba_impact_total)
+            direction = (
+                self.mamba_impact_direction.normalize()
+                if self.mamba_impact_direction.length_squared() > 0
+                else pygame.Vector2(1, 0)
+            )
+            side = pygame.Vector2(-direction.y, direction.x)
+            center = self.mamba_impact_center
+            tip = center + direction * (48 + 28 * (1.0 - life))
+            back = center - direction * 26
+            wing = 18 + 24 * life
+            polygon = (
+                back - side * (wing * 0.55),
+                center - side * wing,
+                tip,
+                center + side * wing,
+                back + side * (wing * 0.55),
+            )
+            pygame.draw.polygon(
+                overlay, (*config.MAMBA_IMPACT_COLOR, int(72 + 84 * life)), polygon
+            )
+            pygame.draw.polygon(
+                overlay, (*config.MAMBA_GLOW_COLOR, int(150 + 80 * life)), polygon, 3
+            )
+            for idx in range(3):
+                offset = (idx - 1) * 12
+                start = center - direction * (10 + idx * 10) + side * offset
+                end = start + direction * (46 + idx * 8)
+                pygame.draw.line(
+                    overlay,
+                    (*config.MAMBA_TRIM_COLOR, int(168 + 55 * life)),
+                    start,
+                    end,
+                    4 - min(idx, 2),
+                )
+
+        self.screen.blit(overlay, (0, 0))
 
     def draw_actor_face(
         self, pos: pygame.Vector2, radius: int, kind: str, *, is_boss: bool = False
@@ -4658,6 +5339,8 @@ class Game:
                     accent = config.CRIT_COLOR
                 elif offer.key in {"speed", "dash"}:
                     accent = config.PLAYER_COLOR
+                elif offer.key == "what_can_i_say":
+                    accent = config.MAMBA_JERSEY_COLOR
                 elif offer.key in {"ricochet", "pierce", "multishot", "accuracy", "shotgun_range"}:
                     accent = config.BULLET_COLOR
                 elif offer.key == "rocket_blast":
@@ -4749,18 +5432,21 @@ class Game:
         value_text = self.fit_text_line(
             value_text, self.tiny_font, max(24, rect.width // 2 - 12)
         )
-        label_surf = self.tiny_font.render(label_text, True, config.TEXT_COLOR)
-        value_surf = self.tiny_font.render(value_text, True, config.TEXT_COLOR)
-        self.screen.blit(
-            label_surf, (rect.left + 8, rect.centery - label_surf.get_height() // 2)
-        )
-        self.screen.blit(
-            value_surf,
-            (
-                rect.right - value_surf.get_width() - 8,
-                rect.centery - value_surf.get_height() // 2,
-            ),
-        )
+        if label_text:
+            label_surf = self.tiny_font.render(label_text, True, config.TEXT_COLOR)
+            self.screen.blit(
+                label_surf,
+                (rect.left + 8, rect.centery - label_surf.get_height() // 2),
+            )
+        if value_text:
+            value_surf = self.tiny_font.render(value_text, True, config.TEXT_COLOR)
+            self.screen.blit(
+                value_surf,
+                (
+                    rect.right - value_surf.get_width() - 8,
+                    rect.centery - value_surf.get_height() // 2,
+                ),
+            )
 
     def draw_hud_chip(
         self, rect: pygame.Rect, label: str, value: str, accent: tuple[int, int, int]
@@ -4819,7 +5505,7 @@ class Game:
             pygame.Rect(status_panel.left + 10, status_panel.top + 28, meter_width, 10),
             "",
             hp_ratio,
-            f"{int(self.player_hp)}/{int(self.player_max_hp)}",
+            "",
             config.HUD_HP_BAR,
             config.HUD_HP_BG,
         )
@@ -4827,7 +5513,7 @@ class Game:
             pygame.Rect(status_panel.left + 10, status_panel.top + 42, meter_width, 8),
             "",
             shield_ratio,
-            f"{int(self.player_shield)}/{int(self.player_max_shield)}",
+            "",
             config.HUD_SHIELD_BAR,
             config.HUD_SHIELD_BG,
         )
@@ -4835,7 +5521,7 @@ class Game:
             pygame.Rect(status_panel.left + 10, status_panel.top + 54, meter_width, 8),
             "",
             xp_ratio,
-            f"{self.xp}/{self.xp_to_level}",
+            "",
             config.HUD_XP_BAR,
             config.HUD_XP_BG,
         )
@@ -4858,26 +5544,9 @@ class Game:
         )
         self.screen.blit(self.tiny_font.render(loadout_line, True, config.TEXT_COLOR), (detail_panel.left + 10, detail_panel.top + 7))
 
-        if self.weapon_mode == "laser":
-            detail_text = (
-                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u5bbd {self.player_beam_width}"
-                f" \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
-            )
-        elif self.is_rocket_weapon():
-            detail_text = (
-                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u7206 {int(self.player_rocket_explosion_radius)}"
-                f" \u00b7 \u63a8 {int(self.player_rocket_explosion_knockback)}"
-            )
-        elif self.is_shotgun_weapon():
-            detail_text = (
-                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u4e38 {self.player_shotgun_pellets}"
-                f" \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
-            )
-        else:
-            detail_text = (
-                f"\u4f24 {int(self.player_damage)} \u00b7 {self.fire_cooldown:.2f}s \u00b7 \u51c6 {self.get_accuracy_rating()}%"
-                f" \u00b7 \u7a7f {self.bullet_pierce} \u00b7 \u4fa7 {self.current_multishot_lane_count()} \u00b7 \u53cd {self.player_bullet_bounces}/{self.ricochet_cap()}"
-            )
+        detail_text = (
+            f"\u4f24 {int(self.player_damage)} \u00b7 \u66b4 {int(round(self.player_crit_chance * 100))}%"
+        )
         detail_line = self.fit_text_line(detail_text, self.tiny_font, detail_panel.width - 20)
         self.screen.blit(self.tiny_font.render(detail_line, True, config.MUTED_TEXT), (detail_panel.left + 10, detail_panel.top + 25))
 

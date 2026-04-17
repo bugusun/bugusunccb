@@ -90,6 +90,7 @@ UPGRADES = (
     Upgrade("shotgun_range", "加长枪膛", "飞行距离增加，扩散略收束"),
     Upgrade("rocket_blast", "广域装药", "火箭炮：爆炸范围 +18"),
     Upgrade("basketball_training", "篮球实习生", "坤坤：篮球速度 +5%，伤害 +2"),
+    Upgrade("what_can_i_say", "what can i say", "曼巴重击伤害 +4，眩晕 +0.12 秒"),
     Upgrade("magnet", "废料磁环", "拾取吸附范围 +16"),
     Upgrade("pulse", "电弧反应堆", "脉冲伤害 +8，冷却 -6%"),
     Upgrade("dash", "矢量驱动", "冲刺冷却 -7%，移速 +8"),
@@ -122,6 +123,10 @@ UPGRADE_WEAPON_RULES = {
         required_character_keys=frozenset({"kunkun"}),
         required_skill_keys=frozenset({"basketball"}),
     ),
+    "what_can_i_say": UpgradeWeaponRule(
+        required_character_keys=frozenset({"mamba"}),
+        required_skill_keys=frozenset({"mamba_smash"}),
+    ),
     "pulse": UpgradeWeaponRule(required_skill_keys=frozenset({"pulse"})),
     "pulse_radius": UpgradeWeaponRule(required_skill_keys=frozenset({"pulse"})),
 }
@@ -134,7 +139,7 @@ STAGES = (
 
 CHARACTERS = (
     CharacterOption("vanguard", "先锋机体", "更厚实的前线框架", "生命与护盾更厚，适合正面推进", "pulse"),
-    CharacterOption("ranger", "游骑机体", "高机动侦察框架", "移速、冲刺与吸附范围更强", "pulse"),
+    CharacterOption("mamba", "曼巴奥特", "黄黑突进机体", "移速与冲刺切入更强，擅长贴身重击", "mamba_smash"),
     CharacterOption("engineer", "工蜂机体", "偏技能与资源调度的支援框架", "脉冲恢复更快，开局自带晶片", "pulse"),
     CharacterOption("kunkun", "坤坤", "均衡型表演机体", "血量、速度与护盾都较均衡", "basketball"),
 )
@@ -154,6 +159,13 @@ CHARACTER_SKILLS = {
         config.BASKETBALL_SKILL_COOLDOWN,
         "篮球",
     ),
+    "mamba_smash": CharacterSkill(
+        "mamba_smash",
+        "曼巴重击",
+        "Q：短暂蓄势后向前方区域挥出重击，造成伤害、强击飞与眩晕",
+        config.MAMBA_SKILL_COOLDOWN,
+        "重击",
+    ),
 }
 
 CHARACTER_PROFILES = {
@@ -163,11 +175,11 @@ CHARACTER_PROFILES = {
         dash_cooldown_mult=0.96,
         skill_key="pulse",
     ),
-    "ranger": CharacterProfile(
-        speed_bonus=28,
-        pickup_radius_bonus=30,
-        dash_distance_bonus=16,
-        skill_key="pulse",
+    "mamba": CharacterProfile(
+        speed_bonus=22,
+        dash_distance_bonus=14,
+        dash_cooldown_mult=0.93,
+        skill_key="mamba_smash",
     ),
     "engineer": CharacterProfile(
         pulse_damage_bonus=8,

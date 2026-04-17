@@ -31,6 +31,7 @@ SHOP_OFFER_POOL = (
     ShopOfferTemplate("accuracy", "瞄具微调", "子弹偏移 -18%，准度提升", 28),
     ShopOfferTemplate("shotgun_range", "加长枪膛", "子弹距离增加，扩散略微收束", 28),
     ShopOfferTemplate("basketball_training", "篮球实习生", "坤坤：篮球速度上升，伤害小幅提高", 28),
+    ShopOfferTemplate("what_can_i_say", "what can i say", "曼巴重击伤害与眩晕时间小幅提高", 30),
     ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +6%", 30),
     ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +18%", 32),
     ShopOfferTemplate("speed", "动力靴组", "移动速度 +18", 24),
@@ -41,11 +42,27 @@ SHOP_OFFER_POOL = (
 )
 
 
+def floor_damage_adjustment(floor_index: int) -> float:
+    floor_value = max(1.0, float(floor_index))
+    if floor_value <= 3.0:
+        t = (floor_value - 1.0) / 2.0
+        return -0.30 + 0.20 * t
+    if floor_value <= 6.0:
+        t = (floor_value - 3.0) / 3.0
+        return -0.10 + 0.15 * t
+    if floor_value <= 9.0:
+        t = (floor_value - 6.0) / 3.0
+        return 0.05 + 0.10 * t
+    return 0.15
+
+
 def enemy_scaling(room_index: int, floor_index: int) -> tuple[float, float, float]:
     difficulty = max(1, room_index)
     floor_bonus = max(0, floor_index - 1)
-    hp_scale = 1.0 + difficulty * 0.07 + floor_bonus * 0.12
-    damage_scale = 1.0 + difficulty * 0.04 + floor_bonus * 0.10
+    hp_scale = (1.0 + difficulty * 0.07 + floor_bonus * 0.12) * 1.10
+    damage_scale = (
+        1.0 + difficulty * 0.04 + floor_bonus * 0.10
+    ) * (1.0 + floor_damage_adjustment(floor_index))
     speed_bonus = difficulty * 1.5 + floor_bonus * 4.0
     return hp_scale, damage_scale, speed_bonus
 

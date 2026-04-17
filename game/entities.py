@@ -51,6 +51,7 @@ class Enemy:
     action_timer: float = 0.0
     special_timer: float = 0.0
     alt_special_timer: float = 0.0
+    stun_timer: float = 0.0
 
 
 @dataclass
@@ -109,3 +110,6 @@ class GasCloud:
     ttl: float
     damage: float = 4.0
     tick_timer: float = 0.0
+    target_radius: float = 0.0
+    growth_speed: float = 0.0
+    activation_delay: float = 0.0
