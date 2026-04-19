@@ -73,6 +73,139 @@ from .navigation import NavigationField
 ChoiceT = TypeVar("ChoiceT", Upgrade, SupplyOption)
 
 
+CHARACTER_SPRITE_SPECS = {
+    "vanguard": {"anchor": (22.0, 22.0), "base_radius": float(config.PLAYER_RADIUS)},
+    "mamba": {"anchor": (18.0, 18.0), "base_radius": float(config.PLAYER_RADIUS)},
+    "kunkun": {"anchor": (18.0, 19.0), "base_radius": float(config.PLAYER_RADIUS)},
+}
+
+WEAPON_SPRITE_ANCHORS = {
+    "rifle": (12.0, 8.0),
+    "scatter": (12.0, 8.0),
+    "shotgun": (12.0, 7.0),
+    "rail": (12.0, 9.0),
+    "rocket": (12.0, 9.0),
+    "laser_burst": (12.0, 8.0),
+    "laser_lance": (12.0, 9.0),
+}
+
+BULLET_SPRITE_SPECS = {
+    "bullet": {"anchor": (8.0, 8.0), "base_radius": 6.0},
+    "bullet_enemy": {"anchor": (8.0, 8.0), "base_radius": 6.0},
+    "bullet_elite": {"anchor": (9.0, 9.0), "base_radius": 7.0},
+    "bullet_shock": {"anchor": (9.0, 9.0), "base_radius": 7.0},
+    "rail": {"anchor": (22.0, 10.0), "base_radius": 6.0},
+    "shotgun_pellet": {"anchor": (15.0, 7.0), "base_radius": 5.0},
+    "rocket": {
+        "anchor": (28.0, 8.0),
+        "base_radius": float(config.ROCKET_PROJECTILE_RADIUS),
+    },
+    "basketball": {
+        "anchor": (13.0, 13.0),
+        "base_radius": float(config.BASKETBALL_RADIUS),
+    },
+}
+
+ENEMY_SPRITE_SPECS = {
+    "grunt": {
+        "anchor": (18.0, 18.0),
+        "base_radius": float(config.ENEMY_RADIUS),
+        "rotates": False,
+    },
+    "laser": {
+        "anchor": (18.0, 18.0),
+        "base_radius": float(config.ENEMY_RADIUS),
+        "rotates": False,
+    },
+    "shooter": {
+        "anchor": (20.0, 20.0),
+        "base_radius": float(config.ENEMY_RADIUS),
+        "rotates": False,
+    },
+    "shotgunner": {
+        "anchor": (18.0, 18.0),
+        "base_radius": float(config.ENEMY_RADIUS),
+        "rotates": False,
+    },
+    "charger": {
+        "anchor": (18.0, 18.0),
+        "base_radius": float(config.ENEMY_RADIUS),
+        "rotates": False,
+    },
+    "elite": {
+        "anchor": (23.0, 23.0),
+        "base_radius": float(config.ENEMY_RADIUS + 2),
+        "rotates": False,
+    },
+    "boss": {
+        "anchor": (37.0, 37.0),
+        "base_radius": float(config.BOSS_RADIUS),
+        "rotates": False,
+    },
+    "challenge": {
+        "anchor": (49.0, 49.0),
+        "base_radius": float(config.BOSS_RADIUS + 4),
+        "rotates": False,
+    },
+    "engineer": {
+        "anchor": (21.0, 21.0),
+        "base_radius": float(config.ENEMY_RADIUS + 1),
+        "rotates": False,
+    },
+    "turret": {
+        "anchor": (19.0, 13.0),
+        "base_radius": float(config.ENEMY_RADIUS + 3),
+        "rotates": True,
+    },
+    "elite_turret": {
+        "anchor": (31.0, 31.0),
+        "base_radius": float(config.ENEMY_RADIUS + 6),
+        "rotates": True,
+    },
+    "toxic_bloater": {
+        "anchor": (19.0, 19.0),
+        "base_radius": float(config.ENEMY_RADIUS + 1),
+        "rotates": False,
+    },
+    "reactor_bomber": {
+        "anchor": (22.0, 22.0),
+        "base_radius": float(config.ENEMY_RADIUS + 2),
+        "rotates": False,
+    },
+}
+
+TURRET_PART_SPRITE_SPECS = {
+    "turret": {
+        "base_anchor": (48.0, 48.0),
+        "top_anchor": (48.0, 48.0),
+        "base_radius": float(config.ENEMY_RADIUS + 3),
+        "ring_offset_y": 0.58,
+    },
+    "elite_turret": {
+        "base_anchor": (48.0, 48.0),
+        "top_anchor": (48.0, 48.0),
+        "base_radius": float(config.ENEMY_RADIUS + 6),
+        "ring_offset_y": 0.58,
+    },
+}
+
+MAP_SPRITE_SPECS = {
+    "wall": {"anchor": (50.0, 14.0), "body_size": (96.0, 24.0)},
+    "cover": {"anchor": (29.0, 17.0), "body_size": (54.0, 30.0)},
+    "crate": {"anchor": (16.0, 16.0), "body_size": (28.0, 28.0)},
+    "bullet": {"anchor": (14.0, 14.0), "body_size": (24.0, 24.0)},
+    "toxic": {"anchor": (15.0, 15.0), "body_size": (26.0, 26.0)},
+    "reactor": {"anchor": (21.0, 21.0), "body_size": (38.0, 38.0)},
+    "nuke": {"anchor": (44.0, 44.0), "body_size": (84.0, 84.0)},
+    "treasure": {"anchor": (42.0, 30.0), "body_size": (84.0, 60.0)},
+    "exit_active": {"anchor": (36.0, 36.0), "body_size": (68.0, 68.0)},
+    "north": {"anchor": (31.0, 21.0), "body_size": (44.0, 24.0)},
+    "east": {"anchor": (21.0, 31.0), "body_size": (24.0, 44.0)},
+    "south": {"anchor": (31.0, 21.0), "body_size": (44.0, 24.0)},
+    "west": {"anchor": (21.0, 31.0), "body_size": (24.0, 44.0)},
+}
+
+
 @dataclass
 class ShopOffer:
     key: str
@@ -264,11 +397,558 @@ class Game:
         self.selected_weapon = WEAPONS[0]
         self.title_panel = "main"
         self.record_path = Path(__file__).resolve().parents[1] / "highscore.json"
-        self.sound_path = Path(__file__).resolve().parents[1] / "resources" / "sound"
+        self.resources_path = Path(__file__).resolve().parents[1] / "resources"
+        self.sound_path = self.resources_path / "sound"
+        self.effects_path = self.resources_path / "effects"
+        self.character_sprites = self.load_named_surfaces(
+            self.resources_path / "characters"
+        )
+        self.weapon_sprites = self.load_named_surfaces(
+            self.resources_path / "weapons"
+        )
+        self.bullet_sprites = self.load_named_surfaces(
+            self.resources_path / "bullets"
+        )
+        self.enemy_sprites = self.load_named_surfaces(
+            self.resources_path / "enemies"
+        )
+        self.map_sprites = self.load_named_surfaces(self.resources_path / "map")
         self.sounds: dict[str, pygame.mixer.Sound | None] = {}
+        self.pulse_effect_frames = self.load_effect_frames("skills/pulse")
+        self.mamba_startup_frames = self.load_effect_frames("skills/mamba_smash_startup")
+        self.mamba_impact_frames = self.load_effect_frames("skills/mamba_smash_impact")
+        self.explosion_wave_frames = self.load_effect_frames("combat/explosion_wave")
+        self.laser_trace_frames = self.load_effect_frames("combat/laser_trace")
+        self.laser_lance_trace_frames = self.load_effect_frames(
+            "combat/laser_lance_trace"
+        )
+        self.enemy_laser_trace_frames = self.load_effect_frames(
+            "combat/enemy_laser_trace"
+        )
+        self.boss_stomp_frames = self.load_effect_frames("telegraphs/boss_stomp")
+        self.boss_nova_frames = self.load_effect_frames("telegraphs/boss_nova")
+        self.challenge_dash_charge_frames = self.load_effect_frames(
+            "telegraphs/challenge_dash_charge"
+        )
+        self.challenge_summon_frames = self.load_effect_frames(
+            "telegraphs/challenge_summon"
+        )
+        self.enemy_laser_frames = self.load_effect_frames("telegraphs/enemy_laser")
+        self.stun_marker_frames = self.load_effect_frames("status/stun_marker")
+        self.poison_marker_frames = self.load_effect_frames("status/poison_marker")
+        self.gas_cloud_frames = self.load_effect_frames("environment/gas_cloud")
+        self.nuke_event_frames = self.load_effect_frames("room_events/nuke")
+        self.elite_turret_event_frames = self.load_effect_frames(
+            "room_events/elite_turret"
+        )
+        self.auto_aim_frames = self.load_effect_frames("ui/auto_aim")
+        self.screen_flash_frames = self.load_effect_frames("ui/screen_flash")
+        self.wall_surface_cache: dict[tuple[int, int, bool], pygame.Surface] = {}
+        self.laser_frame_part_cache: dict[
+            int, tuple[pygame.Surface, pygame.Surface, pygame.Surface]
+        ] = {}
+        self.effect_tint_cache: dict[tuple[int, int, int, int], pygame.Surface] = {}
         self.best_record = self.load_best_record()
         self.init_sounds()
         self.restart_run()
+
+    def load_effect_frames(self, relative_dir: str) -> list[pygame.Surface]:
+        directory = self.effects_path / relative_dir
+        if not directory.exists():
+            return []
+        frames: list[pygame.Surface] = []
+        for path in sorted(directory.glob("*.png")):
+            try:
+                frames.append(pygame.image.load(path.as_posix()).convert_alpha())
+            except pygame.error:
+                continue
+        return frames
+
+    def load_named_surfaces(self, directory: Path) -> dict[str, pygame.Surface]:
+        if not directory.exists():
+            return {}
+        loaded: dict[str, pygame.Surface] = {}
+        for path in sorted(directory.glob("*.png")):
+            try:
+                loaded[path.stem] = pygame.image.load(path.as_posix()).convert_alpha()
+            except pygame.error:
+                continue
+        return loaded
+
+    def effect_frame(
+        self, frames: list[pygame.Surface], progress: float
+    ) -> pygame.Surface | None:
+        if not frames:
+            return None
+        index = min(
+            len(frames) - 1,
+            max(0, int(round(max(0.0, min(1.0, progress)) * (len(frames) - 1)))),
+        )
+        return frames[index]
+
+    def timed_effect_frame(
+        self, frames: list[pygame.Surface], timer: float, total: float
+    ) -> pygame.Surface | None:
+        if total <= 0:
+            return None
+        progress = 1.0 - timer / max(0.01, total)
+        return self.effect_frame(frames, progress)
+
+    def blit_effect_frame(
+        self,
+        frame: pygame.Surface | None,
+        center: pygame.Vector2 | tuple[float, float],
+        *,
+        scale: float | tuple[float, float] = 1.0,
+        angle_degrees: float = 0.0,
+    ) -> None:
+        if frame is None:
+            return
+        image = frame
+        if isinstance(scale, (int, float)):
+            scale_x = float(scale)
+            scale_y = float(scale)
+        else:
+            scale_x, scale_y = scale
+        scale_x = max(0.01, scale_x)
+        scale_y = max(0.01, scale_y)
+        if abs(scale_x - 1.0) > 0.01 or abs(scale_y - 1.0) > 0.01:
+            size = (
+                max(1, int(round(frame.get_width() * scale_x))),
+                max(1, int(round(frame.get_height() * scale_y))),
+            )
+            image = pygame.transform.smoothscale(frame, size)
+        if abs(angle_degrees) > 0.01:
+            image = pygame.transform.rotate(image, angle_degrees)
+        rect = image.get_rect(center=(int(center[0]), int(center[1])))
+        self.screen.blit(image, rect)
+
+    def resolve_scale(
+        self, scale: float | tuple[float, float]
+    ) -> tuple[float, float]:
+        if isinstance(scale, (int, float)):
+            scale_x = float(scale)
+            scale_y = float(scale)
+        else:
+            scale_x, scale_y = scale
+        return max(0.01, scale_x), max(0.01, scale_y)
+
+    def blit_anchored_surface(
+        self,
+        surface: pygame.Surface | None,
+        anchor_world: pygame.Vector2 | tuple[float, float],
+        anchor_px: tuple[float, float],
+        *,
+        scale: float | tuple[float, float] = 1.0,
+        angle_degrees: float = 0.0,
+        alpha: int | None = None,
+    ) -> None:
+        if surface is None:
+            return
+        scale_x, scale_y = self.resolve_scale(scale)
+        image = surface
+        if abs(scale_x - 1.0) > 0.01 or abs(scale_y - 1.0) > 0.01:
+            image = pygame.transform.smoothscale(
+                surface,
+                (
+                    max(1, int(round(surface.get_width() * scale_x))),
+                    max(1, int(round(surface.get_height() * scale_y))),
+                ),
+            )
+        offset = pygame.Vector2(
+            anchor_px[0] - surface.get_width() / 2,
+            anchor_px[1] - surface.get_height() / 2,
+        )
+        offset.x *= scale_x
+        offset.y *= scale_y
+        if abs(angle_degrees) > 0.01:
+            image = pygame.transform.rotate(image, angle_degrees)
+            offset = offset.rotate(angle_degrees)
+        if alpha is not None:
+            image.set_alpha(max(0, min(255, int(alpha))))
+        world = pygame.Vector2(anchor_world)
+        center = world - offset
+        rect = image.get_rect(center=(round(center.x), round(center.y)))
+        self.screen.blit(image, rect)
+
+    def blit_surface_center(
+        self,
+        surface: pygame.Surface | None,
+        center: pygame.Vector2 | tuple[float, float],
+        *,
+        angle_degrees: float = 0.0,
+    ) -> None:
+        if surface is None:
+            return
+        image = surface
+        if abs(angle_degrees) > 0.01:
+            image = pygame.transform.rotate(surface, angle_degrees)
+        rect = image.get_rect(center=(round(center[0]), round(center[1])))
+        self.screen.blit(image, rect)
+
+    def scaled_surface(
+        self, surface: pygame.Surface, width: float, height: float
+    ) -> pygame.Surface:
+        return pygame.transform.smoothscale(
+            surface,
+            (
+                max(1, int(round(width))),
+                max(1, int(round(height))),
+            ),
+        )
+
+    def tiled_wall_surface(self, width: int, height: int) -> pygame.Surface | None:
+        horizontal = width >= height
+        length = max(1, width if horizontal else height)
+        thickness = max(1, height if horizontal else width)
+        cache_key = (length, thickness, horizontal)
+        cached = self.wall_surface_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        sprite = self.map_sprites.get("wall")
+        if sprite is None:
+            return None
+        scale_y = thickness / max(1.0, float(sprite.get_height()))
+        cap_src_w = min(sprite.get_width() // 3, max(10, sprite.get_height() // 2))
+        tile_src_w = min(14, max(8, sprite.get_width() - cap_src_w * 2))
+        if length <= 0 or thickness <= 0:
+            return None
+        if length <= max(20, int(round(cap_src_w * scale_y * 2.2))):
+            strip = self.scaled_surface(sprite, length, thickness)
+        else:
+            left_cap_src = sprite.subsurface((0, 0, cap_src_w, sprite.get_height())).copy()
+            right_cap_src = sprite.subsurface(
+                (sprite.get_width() - cap_src_w, 0, cap_src_w, sprite.get_height())
+            ).copy()
+            tile_x = (sprite.get_width() - tile_src_w) // 2
+            tile_src = sprite.subsurface((tile_x, 0, tile_src_w, sprite.get_height())).copy()
+            target_h = max(1, thickness)
+            cap_w = max(1, int(round(cap_src_w * scale_y)))
+            tile_w = max(1, int(round(tile_src_w * scale_y)))
+            strip = pygame.Surface((length, target_h), pygame.SRCALPHA)
+            left_cap = self.scaled_surface(left_cap_src, cap_w, target_h)
+            right_cap = self.scaled_surface(right_cap_src, cap_w, target_h)
+            tile = self.scaled_surface(tile_src, tile_w, target_h)
+            strip.blit(left_cap, (0, 0))
+            strip.blit(right_cap, (length - cap_w, 0))
+            body_left = cap_w
+            body_right = max(body_left, length - cap_w)
+            x = body_left
+            while x < body_right:
+                remaining = body_right - x
+                if remaining >= tile_w:
+                    strip.blit(tile, (x, 0))
+                else:
+                    strip.blit(tile, (x, 0), pygame.Rect(0, 0, remaining, target_h))
+                x += tile_w
+        final = strip if horizontal else pygame.transform.rotate(strip, 90)
+        self.wall_surface_cache[cache_key] = final
+        return final
+
+    def laser_frame_parts(
+        self, frame: pygame.Surface
+    ) -> tuple[pygame.Surface, pygame.Surface, pygame.Surface]:
+        cached = self.laser_frame_part_cache.get(id(frame))
+        if cached is not None:
+            return cached
+        cap_span = min(frame.get_width() // 3, frame.get_height())
+        body_start = min(frame.get_width() - 2, cap_span)
+        body_width = max(1, frame.get_width() - cap_span * 2)
+        left_cap = frame.subsurface((0, 0, cap_span, frame.get_height())).copy()
+        body = frame.subsurface((body_start, 0, body_width, frame.get_height())).copy()
+        right_cap = frame.subsurface(
+            (frame.get_width() - cap_span, 0, cap_span, frame.get_height())
+        ).copy()
+        parts = (left_cap, body, right_cap)
+        self.laser_frame_part_cache[id(frame)] = parts
+        return parts
+
+    def tinted_effect_frame(
+        self,
+        frame: pygame.Surface | None,
+        color: tuple[int, int, int] | None,
+    ) -> pygame.Surface | None:
+        if frame is None or color is None:
+            return frame
+        r = max(0, min(255, int(color[0])))
+        g = max(0, min(255, int(color[1])))
+        b = max(0, min(255, int(color[2])))
+        cache_key = (id(frame), r, g, b)
+        cached = self.effect_tint_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        tinted = frame.copy()
+        tint_layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+        tint_layer.fill((r, g, b, 255))
+        tinted.blit(tint_layer, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        self.effect_tint_cache[cache_key] = tinted
+        return tinted
+
+    def boss_stomp_effect_color(self, enemy: Enemy) -> tuple[int, int, int]:
+        if enemy.variant == "challenge":
+            return config.CHALLENGE_ROOM_COLOR
+        return config.BULLET_SHOCK_COLOR
+
+    def draw_laser_segment_sprite(
+        self,
+        frame: pygame.Surface | None,
+        start: pygame.Vector2,
+        end: pygame.Vector2,
+        color: tuple[int, int, int],
+        width: int,
+        base_width: float,
+    ) -> None:
+        segment = end - start
+        if segment.length_squared() <= 0:
+            return
+        direction = segment.normalize()
+        angle = -math.degrees(math.atan2(direction.y, direction.x))
+        if frame is None:
+            pygame.draw.line(self.screen, color, start, end, max(2, width))
+            cap_radius = max(3, int(width * 0.7))
+            for point in (start, end):
+                pygame.draw.circle(self.screen, color, point, cap_radius)
+                pygame.draw.circle(
+                    self.screen,
+                    config.LASER_TRACE_CORE,
+                    point,
+                    max(2, cap_radius - 2),
+                )
+            return
+        width_scale = max(0.12, width / max(1.0, base_width))
+        target_h = max(1, int(round(frame.get_height() * width_scale)))
+        left_cap_src, body_src, right_cap_src = self.laser_frame_parts(frame)
+        body = self.scaled_surface(body_src, segment.length(), target_h)
+        cap_w = max(1, int(round(left_cap_src.get_width() * width_scale)))
+        left_cap = self.scaled_surface(left_cap_src, cap_w, target_h)
+        right_cap = self.scaled_surface(right_cap_src, cap_w, target_h)
+        self.blit_surface_center(body, start.lerp(end, 0.5), angle_degrees=angle)
+        self.blit_surface_center(left_cap, start, angle_degrees=angle)
+        self.blit_surface_center(right_cap, end, angle_degrees=angle)
+
+    def enemy_asset_key(self, enemy: Enemy) -> str:
+        if enemy.kind == "boss" and enemy.variant == "challenge":
+            return "challenge"
+        if enemy.kind == "turret" and enemy.variant == "elite_turret":
+            return "elite_turret"
+        return enemy.kind
+
+    def bullet_asset_key(self, bullet: Bullet) -> str:
+        if bullet.style == "basketball":
+            return "basketball"
+        if bullet.style == "rail":
+            return "rail"
+        if bullet.style == "rocket":
+            return "rocket"
+        if bullet.style == "shotgun_pellet":
+            return "shotgun_pellet"
+        if bullet.color == config.BULLET_SHOCK_COLOR:
+            return "bullet_shock"
+        if bullet.color == config.BULLET_ELITE_COLOR:
+            return "bullet_elite"
+        if not bullet.friendly or bullet.color == config.BULLET_ENEMY_COLOR:
+            return "bullet_enemy"
+        return "bullet"
+
+    def laser_trace_asset(
+        self, trace: LaserTrace
+    ) -> tuple[list[pygame.Surface], float, float]:
+        if trace.color == config.LASER_HEAVY_COLOR:
+            return (
+                self.laser_lance_trace_frames or self.laser_trace_frames,
+                480.0,
+                18.0,
+            )
+        if trace.color == config.ENEMY_LASER_COLOR:
+            return (
+                self.enemy_laser_trace_frames or self.laser_trace_frames,
+                480.0,
+                12.0,
+            )
+        return self.laser_trace_frames, 480.0, 12.0
+
+    def turret_aim_angle(self, enemy: Enemy) -> float:
+        direction = enemy.aim_direction
+        if direction.length_squared() <= 0:
+            direction = self.player_pos - enemy.pos
+        if direction.length_squared() <= 0:
+            direction = pygame.Vector2(1, 0)
+        direction = direction.normalize()
+        return -math.degrees(math.atan2(direction.y, direction.x))
+
+    def draw_elite_turret_rings(
+        self, center: pygame.Vector2, radius: float
+    ) -> None:
+        pulse = pygame.time.get_ticks() * 0.006
+        overlay = pygame.Surface((int(radius * 4.8), int(radius * 3.2)), pygame.SRCALPHA)
+        overlay_center = pygame.Vector2(overlay.get_width() / 2, overlay.get_height() / 2)
+        rings = (
+            (
+                radius * (1.12 + 0.04 * math.sin(pulse)),
+                radius * (0.54 + 0.03 * math.sin(pulse)),
+                122,
+            ),
+            (
+                radius * (0.76 + 0.05 * math.sin(pulse + 1.4)),
+                radius * (0.34 + 0.03 * math.sin(pulse + 1.4)),
+                164,
+            ),
+        )
+        for ring_rx, ring_ry, alpha in rings:
+            rect = pygame.Rect(0, 0, int(ring_rx * 2), int(ring_ry * 2))
+            rect.center = (round(overlay_center.x), round(overlay_center.y))
+            pygame.draw.ellipse(
+                overlay,
+                (*config.TURRET_ELITE_COLOR, alpha),
+                rect,
+                2,
+            )
+        self.screen.blit(
+            overlay,
+            overlay.get_rect(center=(round(center.x), round(center.y))),
+        )
+
+    def draw_turret_enemy_sprite(self, enemy: Enemy) -> None:
+        key = self.enemy_asset_key(enemy)
+        part_spec = TURRET_PART_SPRITE_SPECS.get(key)
+        base_sprite = self.enemy_sprites.get(f"{key}_base")
+        top_sprite = self.enemy_sprites.get(f"{key}_top")
+        if part_spec is None or base_sprite is None or top_sprite is None:
+            sprite = self.enemy_sprites.get(key)
+            spec = ENEMY_SPRITE_SPECS.get(key)
+            if sprite is not None and spec is not None:
+                self.blit_anchored_surface(
+                    sprite,
+                    enemy.pos,
+                    spec["anchor"],
+                    scale=enemy.radius / max(1.0, float(spec["base_radius"])),
+                )
+            else:
+                pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
+            return
+        scale = enemy.radius / max(1.0, float(part_spec["base_radius"]))
+        self.blit_anchored_surface(
+            base_sprite,
+            enemy.pos,
+            part_spec["base_anchor"],
+            scale=scale,
+        )
+        if enemy.variant == "elite_turret":
+            ring_center = enemy.pos + pygame.Vector2(
+                0, enemy.radius * float(part_spec.get("ring_offset_y", 0.42))
+            )
+            self.draw_elite_turret_rings(ring_center, enemy.radius)
+        self.blit_anchored_surface(
+            top_sprite,
+            enemy.pos,
+            part_spec["top_anchor"],
+            scale=scale,
+            angle_degrees=self.turret_aim_angle(enemy),
+        )
+
+    def draw_enemy_sprite(self, enemy: Enemy) -> None:
+        if enemy.kind == "turret":
+            self.draw_turret_enemy_sprite(enemy)
+            return
+        key = self.enemy_asset_key(enemy)
+        sprite = self.enemy_sprites.get(key)
+        spec = ENEMY_SPRITE_SPECS.get(key)
+        if sprite is None or spec is None:
+            pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
+            self.draw_actor_face(
+                enemy.pos, enemy.radius, enemy.kind, is_boss=enemy.is_boss
+            )
+            return
+        scale = enemy.radius / max(1.0, float(spec["base_radius"]))
+        angle = 0.0
+        if spec.get("rotates"):
+            direction = enemy.aim_direction
+            if direction.length_squared() <= 0:
+                direction = self.player_pos - enemy.pos
+            if direction.length_squared() <= 0:
+                direction = pygame.Vector2(1, 0)
+            direction = direction.normalize()
+            angle = -math.degrees(math.atan2(direction.y, direction.x))
+        self.blit_anchored_surface(
+            sprite,
+            enemy.pos,
+            spec["anchor"],
+            scale=scale,
+            angle_degrees=angle,
+        )
+
+    def draw_bullet_sprite_instance(self, bullet: Bullet, radius: int) -> None:
+        key = self.bullet_asset_key(bullet)
+        sprite = self.bullet_sprites.get(key)
+        spec = BULLET_SPRITE_SPECS.get(key)
+        if sprite is None or spec is None:
+            pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
+            return
+        angle = 0.0
+        if key in {"rocket", "shotgun_pellet", "rail"} and bullet.velocity.length_squared() > 0:
+            direction = bullet.velocity.normalize()
+            angle = -math.degrees(math.atan2(direction.y, direction.x))
+        alpha = None
+        if bullet.max_ttl > 0 and bullet.decay_visual:
+            alpha = 96 + int(159 * max(0.0, min(1.0, bullet.ttl / bullet.max_ttl)))
+        scale = radius / max(1.0, float(spec["base_radius"]))
+        self.blit_anchored_surface(
+            sprite,
+            bullet.pos,
+            spec["anchor"],
+            scale=scale,
+            angle_degrees=angle,
+            alpha=alpha,
+        )
+
+    def draw_obstacle_sprite(self, obstacle: RoomObstacle) -> None:
+        key = obstacle.tag if obstacle.tag in self.map_sprites else (
+            "cover" if obstacle.destructible else "wall"
+        )
+        if key == "wall":
+            wall_surface = self.tiled_wall_surface(
+                obstacle.rect.width, obstacle.rect.height
+            )
+            if wall_surface is not None:
+                self.screen.blit(
+                    wall_surface,
+                    wall_surface.get_rect(center=obstacle.rect.center),
+                )
+                return
+        sprite = self.map_sprites.get(key)
+        spec = MAP_SPRITE_SPECS.get(key)
+        if sprite is None or spec is None:
+            rect = obstacle.rect
+            fill = (
+                obstacle.fill_color
+                if getattr(obstacle, "fill_color", None) is not None
+                else (
+                    config.OBSTACLE_FILL if not obstacle.destructible else (95, 78, 58)
+                )
+            )
+            border = (
+                obstacle.border_color
+                if getattr(obstacle, "border_color", None) is not None
+                else (
+                    config.OBSTACLE_BORDER
+                    if not obstacle.destructible
+                    else (194, 156, 106)
+                )
+            )
+            radius = 6 if rect.width < 24 or rect.height < 24 else 10
+            pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+            pygame.draw.rect(self.screen, border, rect, 2, border_radius=radius)
+            return
+        base_width, base_height = spec["body_size"]
+        self.blit_anchored_surface(
+            sprite,
+            pygame.Vector2(obstacle.rect.center),
+            spec["anchor"],
+            scale=(
+                obstacle.rect.width / max(1.0, float(base_width)),
+                obstacle.rect.height / max(1.0, float(base_height)),
+            ),
+        )
 
     def restart_run(self) -> None:
         self.player_pos = pygame.Vector2(config.WIDTH / 2, config.HEIGHT / 2)
@@ -5055,6 +5735,8 @@ class Game:
             trail_color = None
             trail_interval = 0.0
             decay_visual = False
+            if self.selected_weapon.key == "rail":
+                projectile_style = "rail"
             if shotgun_weapon:
                 speed_scale, ttl_scale = self.shotgun_pellet_velocity_profile(angle)
                 projectile_speed *= speed_scale
@@ -5706,12 +6388,11 @@ class Game:
     def execute_boss_stomp(self, enemy: Enemy) -> None:
         radius = self.current_boss_stomp_radius(enemy)
         damage = max(22.0, enemy.damage * config.BOSS_STOMP_DAMAGE_MULTIPLIER)
-        self.spawn_explosion_wave(
-            enemy.pos, radius, config.BULLET_SHOCK_COLOR, ttl=0.52
-        )
+        stomp_color = self.boss_stomp_effect_color(enemy)
+        self.spawn_explosion_wave(enemy.pos, radius, stomp_color, ttl=0.52)
         self.spawn_particles(
             enemy.pos.copy(),
-            config.BULLET_SHOCK_COLOR,
+            stomp_color,
             24,
             1.8,
             (2.4, 6.4),
@@ -5721,7 +6402,7 @@ class Game:
             FloatingText(
                 enemy.pos.copy() + pygame.Vector2(0, -38),
                 "撼地",
-                config.BULLET_SHOCK_COLOR,
+                stomp_color,
                 0.7,
             )
         )
@@ -5729,7 +6410,7 @@ class Game:
             self.player_pos.distance_to(enemy.pos) <= radius + config.PLAYER_RADIUS
             and self.iframes <= 0
         ):
-            self.damage_player(damage, config.BULLET_SHOCK_COLOR, 0.48)
+            self.damage_player(damage, stomp_color, 0.48)
             knock = self.player_pos - enemy.pos
             if knock.length_squared() > 0:
                 self.move_circle_with_collisions(
@@ -6909,112 +7590,18 @@ class Game:
             self.draw_screen_doors()
 
         for cloud in self.gas_clouds:
-            radius = int(cloud.radius)
             growth_ratio = (
                 1.0
                 if cloud.target_radius <= 0
                 else max(0.18, min(1.0, cloud.radius / cloud.target_radius))
             )
-            alpha = max(32, min(122, int(112 * (cloud.ttl / 2.6) * growth_ratio + 24)))
-            surf = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
-            pygame.draw.circle(
-                surf, (110, 190, 90, alpha), (radius + 4, radius + 4), radius
-            )
-            pygame.draw.circle(
-                surf,
-                (150, 220, 130, alpha // 2),
-                (radius + 4, radius + 4),
-                max(8, int(radius * 0.72)),
-                3,
-            )
-            if cloud.activation_delay > 0:
-                warning_radius = max(10, int(radius * (1.08 + 0.16 * growth_ratio)))
-                pygame.draw.circle(
-                    surf,
-                    (190, 255, 170, max(36, alpha // 2)),
-                    (radius + 4, radius + 4),
-                    warning_radius,
-                    2,
-                )
-            self.screen.blit(surf, surf.get_rect(center=cloud.pos))
+            frame = self.effect_frame(self.gas_cloud_frames, growth_ratio)
+            scale = max(0.35, cloud.radius / 84.0)
+            self.blit_effect_frame(frame, cloud.pos, scale=scale)
 
         for obstacle in self.obstacles:
             rect = obstacle.rect
-            fill = (
-                obstacle.fill_color
-                if getattr(obstacle, "fill_color", None) is not None
-                else (
-                    config.OBSTACLE_FILL if not obstacle.destructible else (95, 78, 58)
-                )
-            )
-            border = (
-                obstacle.border_color
-                if getattr(obstacle, "border_color", None) is not None
-                else (
-                    config.OBSTACLE_BORDER
-                    if not obstacle.destructible
-                    else (194, 156, 106)
-                )
-            )
-            radius = 6 if rect.width < 24 or rect.height < 24 else 10
-            pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
-            pygame.draw.rect(self.screen, border, rect, 2, border_radius=radius)
-            if obstacle.tag == "bullet":
-                center = pygame.Vector2(rect.center)
-                inner = max(4, min(rect.width, rect.height) // 4)
-                pygame.draw.circle(
-                    self.screen, config.BULLET_BARREL_COLOR, center, inner, 2
-                )
-                pygame.draw.line(
-                    self.screen,
-                    config.BULLET_BARREL_COLOR,
-                    (rect.left + 5, center.y),
-                    (rect.right - 5, center.y),
-                    2,
-                )
-            elif obstacle.tag == "reactor":
-                pygame.draw.circle(
-                    self.screen,
-                    config.BULLET_SHOCK_COLOR,
-                    rect.center,
-                    max(4, min(rect.width, rect.height) // 5),
-                    2,
-                )
-            elif obstacle.tag == "toxic":
-                pygame.draw.circle(
-                    self.screen,
-                    (150, 220, 130),
-                    rect.center,
-                    max(4, min(rect.width, rect.height) // 5),
-                    2,
-                )
-            elif obstacle.tag == "nuke":
-                center = pygame.Vector2(rect.center)
-                core_radius = max(8, min(rect.width, rect.height) // 6)
-                pygame.draw.circle(
-                    self.screen,
-                    config.NUKE_CORE_COLOR,
-                    center,
-                    core_radius,
-                )
-                pygame.draw.circle(
-                    self.screen,
-                    config.NUKE_BORDER_COLOR,
-                    center,
-                    core_radius + 8,
-                    2,
-                )
-                for angle in (math.pi * 1.5, math.pi / 6, math.pi * 5 / 6):
-                    arm = pygame.Vector2(math.cos(angle), math.sin(angle))
-                    start = center + arm * (core_radius + 3)
-                    end = center + arm * (core_radius + 15)
-                    pygame.draw.line(
-                        self.screen,
-                        config.NUKE_BORDER_COLOR,
-                        start,
-                        end,
-                        3,
-                    )
+            self.draw_obstacle_sprite(obstacle)
             if obstacle.destructible and obstacle.max_hp > 0:
                 ratio = max(0.0, obstacle.hp / obstacle.max_hp)
                 bar = pygame.Rect(rect.left, rect.bottom + 4, rect.width, 5)
@@ -7051,62 +7638,10 @@ class Game:
             if bullet.decay_visual and bullet.max_ttl > 0:
                 life = max(0.0, min(1.0, bullet.ttl / bullet.max_ttl))
                 radius = max(1, int(round(bullet.radius * (0.28 + 0.72 * life))))
-            if bullet.style == "rocket" and bullet.velocity.length_squared() > 0:
-                heading = bullet.velocity.normalize()
-                tail = bullet.pos - heading * (radius * 2.1)
-                wing = pygame.Vector2(-heading.y, heading.x) * max(3, radius * 0.75)
-                nose = bullet.pos + heading * (radius * 1.4)
-                pygame.draw.polygon(self.screen, bullet.color, (nose, tail + wing, tail - wing))
-                pygame.draw.circle(self.screen, config.ROCKET_CORE_COLOR, bullet.pos, max(2, radius - 3))
-                exhaust = tail - heading * 4
-                pygame.draw.circle(self.screen, config.ROCKET_EXPLOSION_COLOR, exhaust, max(2, radius // 2 + 1))
-            elif bullet.style == "shotgun_pellet" and bullet.velocity.length_squared() > 0:
-                heading = bullet.velocity.normalize()
-                tail = bullet.pos - heading * max(5, radius * 2.6)
-                pygame.draw.line(
-                    self.screen,
-                    config.SHOTGUN_TRAIL_COLOR,
-                    tail,
-                    bullet.pos,
-                    max(2, radius),
-                )
-                pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
-            elif bullet.style == "basketball":
-                center = (int(bullet.pos.x), int(bullet.pos.y))
-                pygame.draw.circle(self.screen, bullet.color, center, radius)
-                pygame.draw.circle(self.screen, config.BASKETBALL_LINE_COLOR, center, radius, 2)
-                pygame.draw.line(
-                    self.screen,
-                    config.BASKETBALL_LINE_COLOR,
-                    (center[0] - radius + 2, center[1]),
-                    (center[0] + radius - 2, center[1]),
-                    2,
-                )
-                left_arc = pygame.Rect(center[0] - radius, center[1] - radius, radius + 4, radius * 2)
-                right_arc = pygame.Rect(center[0] - 4, center[1] - radius, radius + 4, radius * 2)
-                pygame.draw.arc(self.screen, config.BASKETBALL_LINE_COLOR, left_arc, -math.pi / 2, math.pi / 2, 2)
-                pygame.draw.arc(self.screen, config.BASKETBALL_LINE_COLOR, right_arc, math.pi / 2, math.pi * 1.5, 2)
-            else:
-                pygame.draw.circle(self.screen, bullet.color, bullet.pos, radius)
+            self.draw_bullet_sprite_instance(bullet, radius)
 
         for enemy in self.enemies:
-            if enemy.kind == "boss" and enemy.variant == "challenge":
-                self.draw_challenge_boss_avatar(enemy)
-            elif enemy.kind == "boss":
-                self.draw_standard_boss_avatar(enemy)
-            elif enemy.kind == "elite":
-                self.draw_elite_avatar(enemy)
-            elif enemy.kind == "turret":
-                self.draw_turret_avatar(enemy)
-            elif enemy.kind == "engineer":
-                self.draw_engineer_avatar(enemy)
-            elif enemy.kind == "shooter":
-                self.draw_shooter_avatar(enemy)
-            else:
-                pygame.draw.circle(self.screen, enemy.color, enemy.pos, enemy.radius)
-                self.draw_actor_face(
-                    enemy.pos, enemy.radius, enemy.kind, is_boss=enemy.is_boss
-                )
+            self.draw_enemy_sprite(enemy)
             hp_ratio = max(0.0, enemy.hp / enemy.max_hp)
             if not enemy.is_boss:
                 width = enemy.radius * 2
@@ -7137,21 +7672,10 @@ class Game:
         aim = self.current_fire_direction(mouse)
         self.draw_player_weapon(aim)
         if self.auto_aim_target.length_squared() > 0:
-            ring = 12 + int(2 * math.sin(pygame.time.get_ticks() * 0.012))
-            pygame.draw.circle(
-                self.screen,
-                config.CREDIT_COLOR,
-                self.auto_aim_target,
-                ring,
-                2,
-            )
-            pygame.draw.circle(
-                self.screen,
-                config.ROCKET_CORE_COLOR,
-                self.auto_aim_target,
-                max(4, ring // 3),
-                1,
-            )
+            phase = (pygame.time.get_ticks() * 0.012) % math.tau
+            progress = (math.sin(phase) + 1.0) * 0.5
+            frame = self.effect_frame(self.auto_aim_frames, progress)
+            self.blit_effect_frame(frame, self.auto_aim_target)
 
         for particle in self.particles:
             pygame.draw.circle(
@@ -7181,65 +7705,29 @@ class Game:
     def draw_screen_flash_overlay(self) -> None:
         if self.screen_flash_timer <= 0 or self.screen_flash_total <= 0 or self.screen_flash_alpha <= 0:
             return
-        life = self.screen_flash_timer / max(0.01, self.screen_flash_total)
-        alpha = int(self.screen_flash_alpha * (life ** 0.7))
-        if alpha <= 0:
+        frame = self.timed_effect_frame(
+            self.screen_flash_frames, self.screen_flash_timer, self.screen_flash_total
+        )
+        if frame is None:
             return
-        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-        overlay.fill((*self.screen_flash_color, alpha))
+        overlay = pygame.transform.smoothscale(frame, (config.WIDTH, config.HEIGHT))
+        tinted = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
+        tinted.fill((*self.screen_flash_color, 255))
+        overlay.blit(tinted, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        overlay.set_alpha(self.screen_flash_alpha)
         self.screen.blit(overlay, (0, 0))
 
     def draw_pulse_skill_effects(self) -> None:
         if self.pulse_effect_timer <= 0 or self.pulse_effect_total <= 0:
             return
-        progress = self.pulse_effect_progress()
-        eased = 1.0 - (1.0 - progress) ** 2.35
-        radius = self.pulse_effect_radius()
-        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-        ring_rect = pygame.Rect(0, 0, int(radius * 2), int(radius * 2))
-        ring_rect.center = (int(self.player_pos.x), int(self.player_pos.y))
-        ring_alpha = int(120 + 80 * (1.0 - progress))
-        ring_width = max(3, int(8 - eased * 4))
-        pygame.draw.circle(
-            overlay,
-            (*config.BULLET_SHOCK_COLOR, max(48, ring_alpha // 3)),
-            self.player_pos,
-            int(radius),
+        frame = self.timed_effect_frame(
+            self.pulse_effect_frames, self.pulse_effect_timer, self.pulse_effect_total
         )
-        pygame.draw.circle(
-            overlay,
-            (*config.LASER_LIGHT_COLOR, ring_alpha),
-            self.player_pos,
-            int(radius),
-            ring_width,
-        )
-        phase = pygame.time.get_ticks() * 0.01
-        for idx in range(config.PULSE_EFFECT_ARCS):
-            start_angle = phase + idx * (math.tau / config.PULSE_EFFECT_ARCS)
-            arc_len = 0.44 + 0.10 * math.sin(phase + idx * 0.7)
-            pygame.draw.arc(
-                overlay,
-                (*config.LASER_TRACE_CORE, 190),
-                ring_rect,
-                start_angle,
-                start_angle + arc_len,
-                max(2, ring_width - 1),
-            )
-            direction = pygame.Vector2(math.cos(start_angle), math.sin(start_angle))
-            tangent = pygame.Vector2(-direction.y, direction.x)
-            inner = self.player_pos + direction * max(
-                10.0, radius * (0.22 + 0.05 * idx)
-            )
-            outer = self.player_pos + direction * radius
-            zig = outer + tangent * (6 if idx % 2 == 0 else -6)
-            pygame.draw.lines(
-                overlay,
-                (*config.BULLET_SHOCK_COLOR, 170),
-                False,
-                (inner, zig, outer),
-                2,
-            )
-        self.screen.blit(overlay, (0, 0))
+        diameter = max(24, int(self.pulse_effect_radius() * 2))
+        if frame is not None:
+            scaled = pygame.transform.smoothscale(frame, (diameter, diameter))
+            rect = scaled.get_rect(center=(int(self.player_pos.x), int(self.player_pos.y)))
+            self.screen.blit(scaled, rect)
 
     def draw_player_weapon(self, aim: pygame.Vector2) -> None:
         direction = (
@@ -7251,562 +7739,72 @@ class Game:
                 else pygame.Vector2(1, 0)
             )
         )
-        lateral = pygame.Vector2(-direction.y, direction.x)
+        sprite = self.weapon_sprites.get(self.selected_weapon.key)
+        anchor = WEAPON_SPRITE_ANCHORS.get(self.selected_weapon.key)
         handle = self.player_pos + direction * (config.PLAYER_RADIUS - 3)
-        if self.selected_weapon.key == "shotgun":
-            length = 24
-            half_width = 4.6
-            gun_color = config.SHOTGUN_COLOR
-        elif self.selected_weapon.key == "rocket":
-            length = 25
-            half_width = 5.2
-            gun_color = config.ROCKET_COLOR
-        elif self.selected_weapon.key == "laser_lance":
-            length = 28
-            half_width = 4.0
-            gun_color = config.LASER_HEAVY_COLOR
-        elif self.selected_weapon.key == "laser_burst":
-            length = 24
-            half_width = 3.6
-            gun_color = config.LASER_LIGHT_COLOR
-        elif self.selected_weapon.key == "rail":
-            length = 26
-            half_width = 3.6
-            gun_color = config.BULLET_COLOR
-        else:
-            length = 23
-            half_width = 3.2
-            gun_color = config.BULLET_COLOR
-        butt = handle - direction * 8
-        muzzle = handle + direction * length
-        polygon = (
-            butt - lateral * (half_width * 0.72),
-            handle - lateral * half_width,
-            muzzle - lateral * (half_width * 0.62),
-            muzzle + lateral * (half_width * 0.62),
-            handle + lateral * half_width,
-            butt + lateral * (half_width * 0.72),
-        )
-        outline = config.MAMBA_OUTLINE_COLOR if self.selected_character.key == "mamba" else (26, 30, 40)
-        pygame.draw.polygon(self.screen, outline, polygon)
-        pygame.draw.polygon(self.screen, gun_color, polygon, 0)
-        pygame.draw.polygon(self.screen, outline, polygon, 2)
-        grip = (
-            handle - direction * 4 + lateral * (half_width * 0.72),
-            handle - direction * 10 + lateral * (half_width * 0.2),
-            handle - direction * 7 - lateral * (half_width * 0.4),
-        )
-        pygame.draw.polygon(self.screen, outline, grip)
-        if self.selected_weapon.key == "rocket":
-            pygame.draw.circle(
-                self.screen, config.ROCKET_CORE_COLOR, muzzle, max(2, int(half_width))
+        angle = -math.degrees(math.atan2(direction.y, direction.x))
+        if sprite is not None and anchor is not None:
+            self.blit_anchored_surface(
+                sprite,
+                handle,
+                anchor,
+                angle_degrees=angle,
             )
+            return
+        muzzle = handle + direction * 22
+        pygame.draw.line(self.screen, config.BULLET_COLOR, handle, muzzle, 4)
 
     def draw_player_avatar(self) -> None:
-        pos = self.player_pos
-        radius = config.PLAYER_RADIUS
-
-        if self.selected_character.key == "kunkun":
-            outline = (46, 52, 70)
-            body_color = config.PLAYER_HIT_COLOR if self.iframes > 0 else config.KUNKUN_BODY_COLOR
-            inner_radius = max(4, radius - 2)
-            pygame.draw.circle(self.screen, outline, pos, radius)
-            pygame.draw.circle(self.screen, body_color, pos, inner_radius)
-
-            overall_rect = pygame.Rect(
-                int(pos.x - inner_radius + 1),
-                int(pos.y - radius * 0.04),
-                int(inner_radius * 2 - 2),
-                int(inner_radius * 1.06),
-            )
-            pygame.draw.ellipse(self.screen, config.KUNKUN_OVERALL_COLOR, overall_rect)
-            bib = pygame.Rect(0, 0, int(radius * 1.08), max(10, int(radius * 0.82)))
-            bib.center = (int(pos.x), int(pos.y + radius * 0.26))
-            pygame.draw.rect(self.screen, config.KUNKUN_OVERALL_HILITE, bib, border_radius=6)
-            pygame.draw.rect(self.screen, outline, bib, 2, border_radius=6)
-
-            strap_width = max(4, int(radius * 0.24))
-            left_top = (int(pos.x - radius * 0.54), int(pos.y - radius * 0.34))
-            left_bottom = (int(pos.x - radius * 0.18), int(pos.y + radius * 0.16))
-            right_top = (int(pos.x + radius * 0.54), int(pos.y - radius * 0.34))
-            right_bottom = (int(pos.x + radius * 0.18), int(pos.y + radius * 0.16))
-            pygame.draw.line(self.screen, config.KUNKUN_OVERALL_COLOR, left_top, left_bottom, strap_width)
-            pygame.draw.line(self.screen, config.KUNKUN_OVERALL_COLOR, right_top, right_bottom, strap_width)
-            pygame.draw.circle(self.screen, outline, left_bottom, 2)
-            pygame.draw.circle(self.screen, outline, right_bottom, 2)
-
-            self.draw_actor_face(pos + pygame.Vector2(0, 1), radius, "player")
-
-            hair_cap = (
-                (int(pos.x - radius * 0.86), int(pos.y - radius * 0.10)),
-                (int(pos.x - radius * 0.62), int(pos.y - radius * 0.78)),
-                (int(pos.x - radius * 0.10), int(pos.y - radius * 1.02)),
-                (int(pos.x), int(pos.y - radius * 0.84)),
-                (int(pos.x + radius * 0.10), int(pos.y - radius * 1.02)),
-                (int(pos.x + radius * 0.62), int(pos.y - radius * 0.78)),
-                (int(pos.x + radius * 0.86), int(pos.y - radius * 0.10)),
-            )
-            left_bang = (
-                (int(pos.x - radius * 0.10), int(pos.y - radius * 0.86)),
-                (int(pos.x - radius * 0.50), int(pos.y - radius * 0.36)),
-                (int(pos.x - radius * 0.10), int(pos.y - radius * 0.08)),
-            )
-            right_bang = (
-                (int(pos.x + radius * 0.10), int(pos.y - radius * 0.86)),
-                (int(pos.x + radius * 0.50), int(pos.y - radius * 0.36)),
-                (int(pos.x + radius * 0.10), int(pos.y - radius * 0.08)),
-            )
-            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_SHADOW, hair_cap)
-            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_COLOR, left_bang)
-            pygame.draw.polygon(self.screen, config.KUNKUN_HAIR_COLOR, right_bang)
-            shine_rect = pygame.Rect(0, 0, int(radius * 0.92), int(radius * 0.58))
-            shine_rect.center = (int(pos.x), int(pos.y - radius * 0.62))
-            pygame.draw.arc(self.screen, (248, 250, 255), shine_rect, math.pi * 1.08, math.pi * 1.92, 2)
-            pygame.draw.line(
-                self.screen,
-                outline,
-                (int(pos.x), int(pos.y - radius * 0.92)),
-                (int(pos.x), int(pos.y - radius * 0.24)),
-                1,
+        key = self.selected_character.key
+        sprite = self.character_sprites.get(key)
+        spec = CHARACTER_SPRITE_SPECS.get(key)
+        if sprite is not None and spec is not None:
+            alpha = None
+            if self.iframes > 0 and (pygame.time.get_ticks() // 60) % 2 == 0:
+                alpha = 170
+            self.blit_anchored_surface(
+                sprite,
+                self.player_pos,
+                spec["anchor"],
+                scale=config.PLAYER_RADIUS / max(1.0, float(spec["base_radius"])),
+                alpha=alpha,
             )
             return
-
-        if self.selected_character.key != "mamba":
-            player_color = (
-                config.PLAYER_HIT_COLOR if self.iframes > 0 else config.PLAYER_COLOR
-            )
-            pygame.draw.circle(
-                self.screen, player_color, self.player_pos, config.PLAYER_RADIUS
-            )
-            self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
-            return
-
-        outline_color = config.MAMBA_OUTLINE_COLOR
-        upper_color = (
-            config.MAMBA_GLOW_COLOR
-            if self.iframes > 0
-            else config.MAMBA_UPPER_COLOR
+        player_color = (
+            config.PLAYER_HIT_COLOR if self.iframes > 0 else config.PLAYER_COLOR
         )
-        lower_color = (
-            config.MAMBA_GLOW_COLOR
-            if self.iframes > 0
-            else config.MAMBA_JERSEY_COLOR
-        )
-        inner_radius = max(4, radius - 3)
-        pygame.draw.circle(self.screen, outline_color, pos, radius)
-        pygame.draw.circle(self.screen, lower_color, pos, inner_radius)
-        upper_rect = pygame.Rect(
-            int(pos.x - inner_radius),
-            int(pos.y - inner_radius - radius * 0.06),
-            int(inner_radius * 2),
-            int(inner_radius * 0.82),
-        )
-        pygame.draw.ellipse(self.screen, upper_color, upper_rect)
-        split_y = int(pos.y - radius * 0.18)
-        pygame.draw.line(
-            self.screen,
-            outline_color,
-            (int(pos.x - inner_radius + 2), split_y),
-            (int(pos.x + inner_radius - 2), split_y),
-            2,
-        )
-
-        visor = pygame.Rect(0, 0, int(radius * 1.18), max(8, int(radius * 0.62)))
-        visor.center = (int(pos.x), int(pos.y - radius * 0.10))
-        pygame.draw.ellipse(self.screen, outline_color, visor)
-        pygame.draw.ellipse(
-            self.screen, config.MAMBA_GLOW_COLOR, visor.inflate(-6, -4), 1
-        )
-
-        shoulder = (
-            (int(pos.x - radius * 0.78), int(pos.y - radius * 0.10)),
-            (int(pos.x - radius * 0.22), int(pos.y - radius * 0.52)),
-            (int(pos.x + radius * 0.24), int(pos.y - radius * 0.20)),
-            (int(pos.x + radius * 0.04), int(pos.y + radius * 0.02)),
-            (int(pos.x - radius * 0.52), int(pos.y + radius * 0.04)),
-        )
-        pygame.draw.polygon(self.screen, config.MAMBA_TRIM_COLOR, shoulder)
-        pygame.draw.circle(
-            self.screen,
-            outline_color,
-            (int(pos.x - radius * 0.60), int(pos.y - radius * 0.08)),
-            2,
-        )
-        pygame.draw.circle(
-            self.screen,
-            outline_color,
-            (int(pos.x + radius * 0.60), int(pos.y - radius * 0.08)),
-            2,
-        )
-
-        number = self.tiny_font.render("24", True, (248, 248, 250))
-        number_rect = number.get_rect(
-            center=(int(pos.x), int(pos.y + radius * 0.34))
-        )
-        self.screen.blit(number, number_rect)
+        pygame.draw.circle(self.screen, player_color, self.player_pos, config.PLAYER_RADIUS)
+        self.draw_actor_face(self.player_pos, config.PLAYER_RADIUS, "player")
 
     def draw_enemy_stun_marker(self, enemy: Enemy) -> None:
-        phase = pygame.time.get_ticks() * 0.008
+        phase = ((pygame.time.get_ticks() * 0.008) % math.tau) / math.tau
+        frame = self.effect_frame(self.stun_marker_frames, phase)
         center = enemy.pos + pygame.Vector2(0, -enemy.radius - 8)
-        orbit_radius = max(6, enemy.radius * 0.42)
-        for idx in range(3):
-            angle = phase + idx * (math.tau / 3)
-            point = center + pygame.Vector2(
-                math.cos(angle), math.sin(angle)
-            ) * orbit_radius
-            pygame.draw.circle(self.screen, config.MAMBA_STUN_COLOR, point, 3)
-            pygame.draw.circle(self.screen, config.MAMBA_TRIM_COLOR, point, 3, 1)
+        self.blit_effect_frame(frame, center)
 
     def draw_enemy_poison_marker(self, enemy: Enemy) -> None:
+        phase = ((pygame.time.get_ticks() * 0.008) % math.tau) / math.tau
+        frame = self.effect_frame(self.poison_marker_frames, phase)
         center = enemy.pos + pygame.Vector2(enemy.radius * 0.55, -enemy.radius - 8)
-        for offset in (-5, 0, 5):
-            pygame.draw.circle(
-                self.screen,
-                config.POISON_STATUS_COLOR,
-                (int(center.x + offset), int(center.y - abs(offset) * 0.3)),
-                2,
-            )
+        self.blit_effect_frame(frame, center)
 
     def draw_shooter_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (44, 28, 74)
-        shell = enemy.color
-        trim = (236, 226, 255)
-        glow = (255, 244, 170)
-        pygame.draw.circle(self.screen, outline, pos, radius + 2)
-        pygame.draw.circle(self.screen, shell, pos, radius - 1)
-
-        visor = pygame.Rect(0, 0, int(radius * 1.36), max(10, int(radius * 0.50)))
-        visor.center = (int(pos.x), int(pos.y - radius * 0.10))
-        pygame.draw.rect(self.screen, trim, visor, border_radius=6)
-        pygame.draw.rect(self.screen, outline, visor, 2, border_radius=6)
-        eye_y = visor.centery
-        for offset in (-radius * 0.22, radius * 0.22):
-            pygame.draw.circle(
-                self.screen,
-                glow,
-                (int(pos.x + offset), int(eye_y)),
-                max(2, int(radius * 0.10)),
-            )
-
-        direction = enemy.aim_direction
-        if direction.length_squared() <= 0:
-            direction = self.player_pos - enemy.pos
-        if direction.length_squared() <= 0:
-            direction = pygame.Vector2(0, 1)
-        direction = direction.normalize()
-        side = pygame.Vector2(-direction.y, direction.x)
-        barrel_base = pos + direction * (radius * 0.36)
-        for lane in (-1, 1):
-            start = barrel_base + side * (radius * 0.18 * lane)
-            end = start + direction * (radius * 0.94)
-            pygame.draw.line(
-                self.screen,
-                outline,
-                start,
-                end,
-                max(4, int(radius * 0.22)),
-            )
-            pygame.draw.line(
-                self.screen,
-                trim,
-                start,
-                end,
-                max(2, int(radius * 0.10)),
-            )
-            pygame.draw.circle(
-                self.screen,
-                outline,
-                (int(end.x), int(end.y)),
-                max(2, int(radius * 0.13)),
-            )
-        drum = pygame.Rect(0, 0, int(radius * 0.82), int(radius * 0.62))
-        drum.center = (int(pos.x), int(pos.y + radius * 0.36))
-        pygame.draw.rect(self.screen, outline, drum, border_radius=4)
-        pygame.draw.rect(self.screen, (94, 76, 132), drum.inflate(-4, -4), border_radius=4)
+        self.draw_enemy_sprite(enemy)
 
     def draw_engineer_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (28, 62, 56)
-        body = enemy.color
-        trim = (214, 250, 232)
-        accent = (255, 210, 122)
-        pygame.draw.circle(self.screen, outline, pos, radius + 2)
-        pygame.draw.circle(self.screen, body, pos, radius)
-        helmet = pygame.Rect(0, 0, int(radius * 1.5), int(radius * 0.8))
-        helmet.center = (int(pos.x), int(pos.y - radius * 0.18))
-        pygame.draw.rect(self.screen, trim, helmet, border_radius=7)
-        pygame.draw.rect(self.screen, outline, helmet, 2, border_radius=7)
-        visor = pygame.Rect(0, 0, int(radius * 0.92), int(radius * 0.22))
-        visor.center = helmet.center
-        pygame.draw.rect(self.screen, accent, visor, border_radius=4)
-        pygame.draw.rect(self.screen, outline, visor, 1, border_radius=4)
-        pack = pygame.Rect(0, 0, int(radius * 0.9), int(radius * 0.7))
-        pack.center = (int(pos.x), int(pos.y + radius * 0.40))
-        pygame.draw.rect(self.screen, outline, pack, border_radius=6)
-        pygame.draw.rect(self.screen, body, pack.inflate(-4, -4), border_radius=5)
-        for side in (-1, 1):
-            arm_start = pos + pygame.Vector2(side * radius * 0.36, radius * 0.12)
-            arm_end = arm_start + pygame.Vector2(side * radius * 0.48, radius * 0.18)
-            pygame.draw.line(self.screen, outline, arm_start, arm_end, 5)
-            pygame.draw.line(self.screen, trim, arm_start, arm_end, 3)
-        wrench_center = pos + pygame.Vector2(radius * 0.72, -radius * 0.10)
-        pygame.draw.circle(self.screen, accent, wrench_center, max(3, radius // 4), 2)
-        pygame.draw.line(
-            self.screen,
-            accent,
-            pos + pygame.Vector2(radius * 0.42, radius * 0.02),
-            wrench_center,
-            2,
-        )
+        self.draw_enemy_sprite(enemy)
 
     def draw_turret_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (82, 56, 26)
-        body = enemy.color
-        trim = (
-            config.ROCKET_CORE_COLOR
-            if enemy.variant == "elite_turret"
-            else (246, 228, 180)
-        )
-        base_rect = pygame.Rect(0, 0, int(radius * 1.8), int(radius * 0.9))
-        base_rect.center = (int(pos.x), int(pos.y + radius * 0.42))
-        pygame.draw.ellipse(self.screen, outline, base_rect)
-        pygame.draw.ellipse(self.screen, body, base_rect.inflate(-4, -4))
-        core_rect = pygame.Rect(0, 0, int(radius * 1.36), int(radius * 1.10))
-        core_rect.center = (int(pos.x), int(pos.y - radius * 0.02))
-        pygame.draw.ellipse(self.screen, outline, core_rect)
-        pygame.draw.ellipse(self.screen, body, core_rect.inflate(-4, -4))
-        barrel_dir = (
-            enemy.aim_direction
-            if enemy.aim_direction.length_squared() > 0
-            else pygame.Vector2(1, 0)
-        ).normalize()
-        barrel_side = pygame.Vector2(-barrel_dir.y, barrel_dir.x) * max(
-            3, radius * 0.22
-        )
-        barrel_start = pos + barrel_dir * (radius * 0.10)
-        barrel_end = pos + barrel_dir * (
-            radius + (16 if enemy.variant == "elite_turret" else 12)
-        )
-        points = (
-            barrel_start + barrel_side,
-            barrel_start - barrel_side,
-            barrel_end - barrel_side * 0.72,
-            barrel_end + barrel_side * 0.72,
-        )
-        pygame.draw.polygon(self.screen, trim, points)
-        pygame.draw.polygon(self.screen, outline, points, 2)
-        lens = pos + barrel_dir * (radius * 0.28)
-        pygame.draw.circle(self.screen, trim, lens, max(4, radius // 3))
-        pygame.draw.circle(self.screen, outline, lens, max(4, radius // 3), 2)
-        if enemy.variant == "elite_turret":
-            ring_radius = radius + 7 + int(2 * math.sin(pygame.time.get_ticks() * 0.01))
-            pygame.draw.circle(self.screen, config.TURRET_ELITE_COLOR, pos, ring_radius, 2)
+        self.draw_enemy_sprite(enemy)
 
     def draw_elite_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (96, 44, 20)
-        shell = (180, 96, 58)
-        trim = (255, 226, 152)
-        core = config.BULLET_ELITE_COLOR
-        pygame.draw.circle(self.screen, outline, pos, radius + 3)
-        pygame.draw.circle(self.screen, shell, pos, radius)
-        body = pygame.Rect(0, 0, int(radius * 1.58), int(radius * 1.28))
-        body.center = (int(pos.x), int(pos.y + radius * 0.04))
-        pygame.draw.ellipse(self.screen, shell, body)
-        pygame.draw.ellipse(self.screen, outline, body, 2)
-        for side in (-1, 1):
-            wing = (
-                (int(pos.x + side * radius * 0.26), int(pos.y - radius * 0.12)),
-                (int(pos.x + side * radius * 1.02), int(pos.y - radius * 0.58)),
-                (int(pos.x + side * radius * 0.72), int(pos.y + radius * 0.06)),
-            )
-            pygame.draw.polygon(self.screen, trim, wing)
-            pygame.draw.polygon(self.screen, outline, wing, 2)
-        core_rect = pygame.Rect(0, 0, int(radius * 0.72), int(radius * 0.84))
-        core_rect.center = (int(pos.x), int(pos.y + radius * 0.02))
-        pygame.draw.rect(self.screen, outline, core_rect, border_radius=8)
-        pygame.draw.rect(self.screen, core, core_rect.inflate(-4, -4), border_radius=7)
-        cannon_dir = (
-            enemy.aim_direction
-            if enemy.aim_direction.length_squared() > 0
-            else pygame.Vector2(1, 0)
-        ).normalize()
-        cannon_side = pygame.Vector2(-cannon_dir.y, cannon_dir.x)
-        for offset in (-radius * 0.24, radius * 0.24):
-            start = pos + cannon_side * offset
-            end = start + cannon_dir * (radius + 10)
-            pygame.draw.line(self.screen, trim, start, end, 4)
-            pygame.draw.line(self.screen, outline, start, end, 2)
+        self.draw_enemy_sprite(enemy)
 
     def draw_standard_boss_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (54, 18, 18)
-        shell = (112, 34, 34)
-        armor = (170, 76, 76)
-        trim = (238, 198, 132)
-        glow = (255, 236, 184)
-        phase_glow = config.BOSS_BAR_PHASE if enemy.phase >= 2 else trim
-
-        pygame.draw.circle(self.screen, outline, pos, radius + 5)
-        pygame.draw.circle(self.screen, shell, pos, radius + 1)
-
-        chassis = pygame.Rect(0, 0, int(radius * 1.78), int(radius * 1.50))
-        chassis.center = (int(pos.x), int(pos.y + radius * 0.04))
-        pygame.draw.ellipse(self.screen, armor, chassis)
-        pygame.draw.ellipse(self.screen, outline, chassis, 3)
-
-        visor = pygame.Rect(0, 0, int(radius * 1.32), int(radius * 0.44))
-        visor.center = (int(pos.x), int(pos.y - radius * 0.14))
-        pygame.draw.ellipse(self.screen, outline, visor)
-        pygame.draw.ellipse(self.screen, (70, 20, 20), visor.inflate(-6, -6))
-        for side in (-1, 1):
-            eye = pygame.Rect(0, 0, int(radius * 0.42), int(radius * 0.16))
-            eye.center = (int(pos.x + side * radius * 0.34), int(pos.y - radius * 0.14))
-            pygame.draw.line(
-                self.screen,
-                glow,
-                (eye.left, eye.centery + side),
-                (eye.right, eye.centery - side * 2),
-                4,
-            )
-            pygame.draw.line(
-                self.screen,
-                outline,
-                (eye.left, eye.centery + side),
-                (eye.right, eye.centery - side * 2),
-                2,
-            )
-
-        core = pygame.Rect(0, 0, int(radius * 0.74), int(radius * 0.56))
-        core.center = (int(pos.x), int(pos.y + radius * 0.22))
-        pygame.draw.ellipse(self.screen, outline, core)
-        pygame.draw.ellipse(self.screen, phase_glow, core.inflate(-7, -6))
-        pygame.draw.arc(
-            self.screen,
-            outline,
-            pygame.Rect(
-                int(pos.x - radius * 0.40),
-                int(pos.y + radius * 0.18),
-                int(radius * 0.80),
-                max(10, int(radius * 0.36)),
-            ),
-            0.22,
-            math.pi - 0.22,
-            3,
-        )
-
-        horn_height = radius * (1.10 if enemy.phase >= 2 else 0.92)
-        for side in (-1, 1):
-            base = pygame.Vector2(pos.x + side * radius * 0.52, pos.y - radius * 0.42)
-            tip = pygame.Vector2(pos.x + side * radius * 0.94, pos.y - horn_height)
-            inner = pygame.Vector2(pos.x + side * radius * 0.24, pos.y - radius * 0.78)
-            pygame.draw.polygon(self.screen, armor, (base, tip, inner))
-            pygame.draw.polygon(self.screen, outline, (base, tip, inner), 2)
-
-        pauldrons = (
-            pygame.Rect(
-                int(pos.x - radius * 1.16),
-                int(pos.y - radius * 0.08),
-                int(radius * 0.62),
-                int(radius * 0.74),
-            ),
-            pygame.Rect(
-                int(pos.x + radius * 0.54),
-                int(pos.y - radius * 0.08),
-                int(radius * 0.62),
-                int(radius * 0.74),
-            ),
-        )
-        for panel in pauldrons:
-            pygame.draw.rect(self.screen, armor, panel, border_radius=8)
-            pygame.draw.rect(self.screen, outline, panel, 2, border_radius=8)
-            pygame.draw.line(
-                self.screen,
-                trim,
-                (panel.left + 6, panel.centery),
-                (panel.right - 6, panel.centery),
-                2,
-            )
+        self.draw_enemy_sprite(enemy)
 
     def draw_challenge_boss_avatar(self, enemy: Enemy) -> None:
-        pos = enemy.pos
-        radius = enemy.radius
-        outline = (54, 18, 18)
-        shell = (104, 28, 28)
-        plate = (152, 54, 54)
-        core = config.CHALLENGE_ROOM_COLOR
-        glow = (255, 214, 214)
-        pygame.draw.circle(self.screen, outline, pos, radius + 5)
-        pygame.draw.circle(self.screen, shell, pos, radius + 1)
-
-        spike_dirs = (
-            pygame.Vector2(0, -1),
-            pygame.Vector2(1, 0),
-            pygame.Vector2(0, 1),
-            pygame.Vector2(-1, 0),
-        )
-        for direction in spike_dirs:
-            tangent = pygame.Vector2(-direction.y, direction.x)
-            base = pos + direction * (radius * 0.52)
-            tip = pos + direction * (radius + 13)
-            left = base + tangent * (radius * 0.34)
-            right = base - tangent * (radius * 0.34)
-            pygame.draw.polygon(self.screen, plate, (tip, left, right))
-            pygame.draw.polygon(self.screen, outline, (tip, left, right), 2)
-
-        inner_rect = pygame.Rect(0, 0, int(radius * 1.78), int(radius * 1.52))
-        inner_rect.center = (int(pos.x), int(pos.y))
-        pygame.draw.ellipse(self.screen, core, inner_rect)
-        pygame.draw.ellipse(self.screen, glow, inner_rect.inflate(-10, -16), 2)
-
-        brow_y = pos.y - radius * 0.24
-        eye_dx = radius * 0.44
-        for direction in (-1, 1):
-            eye = pygame.Rect(0, 0, int(radius * 0.46), int(radius * 0.24))
-            eye.center = (int(pos.x + direction * eye_dx), int(brow_y))
-            pygame.draw.line(
-                self.screen,
-                glow,
-                (eye.left, eye.centery + direction),
-                (eye.right, eye.centery - direction * 2),
-                4,
-            )
-            pygame.draw.line(
-                self.screen,
-                outline,
-                (eye.left, eye.centery + direction),
-                (eye.right, eye.centery - direction * 2),
-                2,
-            )
-
-        core_rect = pygame.Rect(0, 0, int(radius * 0.82), int(radius * 0.64))
-        core_rect.center = (int(pos.x), int(pos.y + radius * 0.12))
-        pygame.draw.ellipse(self.screen, outline, core_rect)
-        pygame.draw.ellipse(
-            self.screen,
-            config.ENEMY_LASER_LOCK_COLOR,
-            core_rect.inflate(-8, -6),
-        )
-        pygame.draw.arc(
-            self.screen,
-            outline,
-            pygame.Rect(
-                int(pos.x - radius * 0.42),
-                int(pos.y + radius * 0.12),
-                int(radius * 0.84),
-                max(10, int(radius * 0.40)),
-            ),
-            0.20,
-            math.pi - 0.20,
-            3,
-        )
+        self.draw_enemy_sprite(enemy)
 
     def draw_mamba_skill_effects(self) -> None:
         if (
@@ -7815,87 +7813,40 @@ class Game:
         ):
             return
 
-        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
-
         if (
             self.skill_cast_key == "mamba_smash"
             and self.skill_cast_timer > 0
             and self.skill_cast_total > 0
         ):
-            life = self.skill_cast_timer / max(0.01, self.skill_cast_total)
             direction = (
                 self.skill_cast_direction.normalize()
                 if self.skill_cast_direction.length_squared() > 0
                 else pygame.Vector2(1, 0)
             )
-            side = pygame.Vector2(-direction.y, direction.x)
-            base = self.player_pos + direction * 10
-            tip = self.player_pos + direction * (config.MAMBA_SKILL_RANGE * 0.88)
-            half_width = 24 + (1.0 - life) * 24
-            polygon = (
-                base - side * 18,
-                tip - side * half_width,
-                tip + side * half_width,
-                base + side * 18,
+            frame = self.timed_effect_frame(
+                self.mamba_startup_frames, self.skill_cast_timer, self.skill_cast_total
             )
-            pygame.draw.polygon(
-                overlay, (*config.MAMBA_JERSEY_COLOR, int(38 + 54 * life)), polygon
-            )
-            pygame.draw.polygon(
-                overlay, (*config.MAMBA_TRIM_COLOR, int(160 + 55 * life)), polygon, 3
-            )
-            for idx in range(3):
-                line_pos = 0.28 + idx * 0.17
-                center = base.lerp(tip, line_pos)
-                width = 14 + idx * 8
-                start = center - side * width
-                end = center + side * width
-                pygame.draw.line(
-                    overlay,
-                    (*config.MAMBA_TRIM_COLOR, int(120 + 45 * life)),
-                    start,
-                    end,
-                    3,
-                )
+            center = self.player_pos + direction * (config.MAMBA_SKILL_RANGE * 0.471)
+            angle = -math.degrees(math.atan2(direction.y, direction.x))
+            self.blit_effect_frame(frame, center, angle_degrees=angle)
 
         if self.mamba_impact_timer > 0 and self.mamba_impact_total > 0:
-            life = self.mamba_impact_timer / max(0.01, self.mamba_impact_total)
             direction = (
                 self.mamba_impact_direction.normalize()
                 if self.mamba_impact_direction.length_squared() > 0
                 else pygame.Vector2(1, 0)
             )
-            side = pygame.Vector2(-direction.y, direction.x)
-            center = self.mamba_impact_center
-            tip = center + direction * (48 + 28 * (1.0 - life))
-            back = center - direction * 26
-            wing = 18 + 24 * life
-            polygon = (
-                back - side * (wing * 0.55),
-                center - side * wing,
-                tip,
-                center + side * wing,
-                back + side * (wing * 0.55),
+            frame = self.timed_effect_frame(
+                self.mamba_impact_frames,
+                self.mamba_impact_timer,
+                self.mamba_impact_total,
             )
-            pygame.draw.polygon(
-                overlay, (*config.MAMBA_IMPACT_COLOR, int(72 + 84 * life)), polygon
+            angle = -math.degrees(math.atan2(direction.y, direction.x))
+            self.blit_effect_frame(
+                frame,
+                self.mamba_impact_center,
+                angle_degrees=angle,
             )
-            pygame.draw.polygon(
-                overlay, (*config.MAMBA_GLOW_COLOR, int(150 + 80 * life)), polygon, 3
-            )
-            for idx in range(3):
-                offset = (idx - 1) * 12
-                start = center - direction * (10 + idx * 10) + side * offset
-                end = start + direction * (46 + idx * 8)
-                pygame.draw.line(
-                    overlay,
-                    (*config.MAMBA_TRIM_COLOR, int(168 + 55 * life)),
-                    start,
-                    end,
-                    4 - min(idx, 2),
-                )
-
-        self.screen.blit(overlay, (0, 0))
 
     def draw_actor_face(
         self, pos: pygame.Vector2, radius: int, kind: str, *, is_boss: bool = False
@@ -8105,62 +8056,61 @@ class Game:
     def draw_screen_doors(self) -> None:
         if self.room_layout is None or self.current_room_state is None:
             return
-        door_marks = {"north": "↑", "east": "→", "south": "↓", "west": "←"}
         for direction, rect in self.room_layout.screen_doors.items():
             locked = self.is_door_locked(self.current_room_state, direction)
-            fill = (155, 66, 66) if locked else config.DOOR_FILL
-            glow = (210, 96, 96) if locked else config.DOOR_GLOW
-            pygame.draw.rect(self.screen, glow, rect.inflate(14, 14), border_radius=12)
-            pygame.draw.rect(self.screen, fill, rect, border_radius=8)
-            if not locked:
-                arrow = self.small_font.render(
-                    door_marks[direction], True, config.TEXT_COLOR
-                )
-                self.screen.blit(arrow, arrow.get_rect(center=rect.center))
+            key = f"{direction}_locked" if locked else direction
+            sprite = self.map_sprites.get(key)
+            spec = MAP_SPRITE_SPECS.get(direction)
+            if sprite is None or spec is None:
+                fill = (155, 66, 66) if locked else config.DOOR_FILL
+                glow = (210, 96, 96) if locked else config.DOOR_GLOW
+                pygame.draw.rect(self.screen, glow, rect.inflate(14, 14), border_radius=12)
+                pygame.draw.rect(self.screen, fill, rect, border_radius=8)
+                continue
+            self.blit_anchored_surface(
+                sprite,
+                pygame.Vector2(rect.center),
+                spec["anchor"],
+                scale=(
+                    rect.width / max(1.0, float(spec["body_size"][0])),
+                    rect.height / max(1.0, float(spec["body_size"][1])),
+                ),
+            )
 
     def draw_enemy_telegraphs(self) -> None:
         for enemy in self.enemies:
             if enemy.kind == "boss" and enemy.action_state:
                 if enemy.action_state == "stomp":
-                    life = 1.0 - enemy.action_timer / max(
-                        0.01, config.BOSS_STOMP_TELEGRAPH
+                    frame = self.timed_effect_frame(
+                        self.boss_stomp_frames,
+                        enemy.action_timer,
+                        config.BOSS_STOMP_TELEGRAPH,
                     )
-                    radius = int(
-                        self.current_boss_stomp_radius(enemy) * (0.82 + 0.18 * life)
+                    frame = self.tinted_effect_frame(
+                        frame, self.boss_stomp_effect_color(enemy)
                     )
-                    pygame.draw.circle(
-                        self.screen, config.BULLET_SHOCK_COLOR, enemy.pos, radius, 3
+                    scale = self.current_boss_stomp_radius(enemy) / max(
+                        1.0, float(config.BOSS_STOMP_RADIUS)
                     )
-                    pygame.draw.circle(
-                        self.screen,
-                        config.BULLET_SHOCK_COLOR,
-                        enemy.pos,
-                        enemy.radius + 8,
-                        2,
-                    )
+                    self.blit_effect_frame(frame, enemy.pos, scale=scale)
                 elif enemy.action_state == "nova":
-                    life = 1.0 - enemy.action_timer / max(
-                        0.01, config.BOSS_NOVA_TELEGRAPH
+                    frame = self.timed_effect_frame(
+                        self.boss_nova_frames,
+                        enemy.action_timer,
+                        config.BOSS_NOVA_TELEGRAPH,
                     )
-                    radius = int(enemy.radius + 32 + 18 * life)
-                    pygame.draw.circle(
-                        self.screen, config.BULLET_ELITE_COLOR, enemy.pos, radius, 3
-                    )
-                    for idx in range(4):
-                        angle = math.tau * idx / 4 + life * 0.42
-                        direction = pygame.Vector2(math.cos(angle), math.sin(angle))
-                        pygame.draw.line(
-                            self.screen,
-                            config.BULLET_ELITE_COLOR,
-                            enemy.pos,
-                            enemy.pos + direction * radius,
-                            2,
-                        )
+                    scale = enemy.radius / max(1.0, float(config.BOSS_RADIUS))
+                    self.blit_effect_frame(frame, enemy.pos, scale=scale)
                 elif enemy.action_state == "dash_charge":
                     direction = (
                         enemy.aim_direction.normalize()
                         if enemy.aim_direction.length_squared() > 0
                         else pygame.Vector2(1, 0)
+                    )
+                    frame = self.timed_effect_frame(
+                        self.challenge_dash_charge_frames,
+                        enemy.action_timer,
+                        config.CHALLENGE_BOSS_DASH_WINDUP,
                     )
                     dash_length = max(
                         120,
@@ -8169,43 +8119,22 @@ class Game:
                             * 0.7
                         ),
                     )
-                    end = enemy.pos + direction * dash_length
-                    pygame.draw.line(
-                        self.screen,
-                        config.CHALLENGE_ROOM_COLOR,
-                        enemy.pos,
-                        end,
-                        4,
-                    )
-                    pygame.draw.circle(
-                        self.screen,
-                        config.CHALLENGE_ROOM_COLOR,
-                        enemy.pos,
-                        enemy.radius + 10,
-                        3,
+                    center = enemy.pos + direction * (dash_length * 0.3917)
+                    angle = -math.degrees(math.atan2(direction.y, direction.x))
+                    self.blit_effect_frame(
+                        frame,
+                        center,
+                        scale=dash_length / 180.0,
+                        angle_degrees=angle,
                     )
                 elif enemy.action_state == "summon":
-                    life = 1.0 - enemy.action_timer / max(
-                        0.01, config.CHALLENGE_BOSS_SUMMON_TELEGRAPH
+                    frame = self.timed_effect_frame(
+                        self.challenge_summon_frames,
+                        enemy.action_timer,
+                        config.CHALLENGE_BOSS_SUMMON_TELEGRAPH,
                     )
-                    radius = int(enemy.radius + 18 + 12 * life)
-                    pygame.draw.circle(
-                        self.screen,
-                        config.CHALLENGE_ROOM_COLOR,
-                        enemy.pos,
-                        radius,
-                        3,
-                    )
-                    for idx in range(config.CHALLENGE_BOSS_SUMMON_COUNT):
-                        angle = math.tau * idx / max(1, config.CHALLENGE_BOSS_SUMMON_COUNT) + life * 0.8
-                        marker = enemy.pos + pygame.Vector2(math.cos(angle), math.sin(angle)) * (radius + 12)
-                        pygame.draw.circle(
-                            self.screen,
-                            config.CHALLENGE_ROOM_COLOR,
-                            marker,
-                            8,
-                            2,
-                        )
+                    scale = enemy.radius / max(1.0, float(config.BOSS_RADIUS))
+                    self.blit_effect_frame(frame, enemy.pos, scale=scale)
             if (
                 (
                     enemy.kind == "boss"
@@ -8218,113 +8147,63 @@ class Game:
                 )
             ):
                 continue
-            telegraph_window, lock_window = self.get_enemy_laser_timing(enemy)
+            telegraph_window, _ = self.get_enemy_laser_timing(enemy)
             if not (0 < enemy.shoot_timer <= telegraph_window):
                 continue
             points, _ = self.trace_beam(enemy.pos, enemy.aim_direction, 3)
-            locked = enemy.shoot_timer <= lock_window
-            color = (
-                config.ENEMY_LASER_LOCK_COLOR if locked else config.ENEMY_LASER_COLOR
+            if len(points) < 2:
+                continue
+            frame = self.timed_effect_frame(
+                self.enemy_laser_frames, enemy.shoot_timer, telegraph_window
             )
-            width = 3 if locked else 2
-            for start, end in zip(points, points[1:]):
-                pygame.draw.line(self.screen, color, start, end, width)
-            pygame.draw.circle(self.screen, color, enemy.pos, enemy.radius + 4, 1)
+            start = points[0]
+            end = points[-1]
+            segment = end - start
+            if segment.length_squared() <= 0:
+                continue
+            direction = segment.normalize()
+            normal = pygame.Vector2(-direction.y, direction.x)
+            length = segment.length()
+            scale = length / 494.162
+            center = (
+                start
+                + direction * (length * 0.4783)
+                + normal * (8.685 * scale)
+            )
+            angle = -math.degrees(math.atan2(direction.y, direction.x)) - 7.44
+            self.blit_effect_frame(
+                frame,
+                center,
+                scale=scale,
+                angle_degrees=angle,
+            )
 
     def draw_explosion_waves(self) -> None:
         if not self.explosion_waves:
             return
-        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         for wave in self.explosion_waves:
-            life = max(0.0, min(1.0, wave.ttl / max(0.01, wave.max_ttl)))
-            radius = int(wave.radius * (0.55 + 0.45 * (1.0 - life)))
-            fill_alpha = int(26 + 44 * life)
-            ring_alpha = int(110 + 90 * life)
-            ring_width = max(3, int(8 * life) + 2)
-            pygame.draw.circle(overlay, (*wave.color, fill_alpha), wave.pos, radius)
-            pygame.draw.circle(
-                overlay,
-                (*config.LASER_TRACE_CORE, ring_alpha),
-                wave.pos,
-                radius,
-                ring_width,
+            frame = self.timed_effect_frame(
+                self.explosion_wave_frames, wave.ttl, wave.max_ttl
             )
-            pygame.draw.circle(
-                overlay,
-                (*wave.color, min(255, ring_alpha + 25)),
-                wave.pos,
-                max(12, radius - ring_width * 2),
-                2,
-            )
-        self.screen.blit(overlay, (0, 0))
+            frame = self.tinted_effect_frame(frame, wave.color)
+            scale = wave.radius / 140.0
+            self.blit_effect_frame(frame, wave.pos, scale=scale)
 
     def draw_laser_traces(self) -> None:
         if not self.laser_traces:
             return
-        overlay = pygame.Surface((config.WIDTH, config.HEIGHT), pygame.SRCALPHA)
         for trace in self.laser_traces:
-            life = max(0.0, min(1.0, trace.ttl / max(0.01, trace.max_ttl)))
-            outer_width = trace.width + max(4, int(8 * life))
-            mid_width = trace.width + max(2, int(4 * life))
-            core_width = max(2, trace.width // 2)
+            frames, _, base_width = self.laser_trace_asset(trace)
+            frame = self.timed_effect_frame(frames, trace.ttl, trace.max_ttl)
             for start, end in zip(trace.points, trace.points[1:]):
-                segment = end - start
-                offset = pygame.Vector2()
-                if segment.length_squared() > 0:
-                    offset = pygame.Vector2(-segment.y, segment.x)
-                    offset.scale_to_length(max(0.8, trace.width * 0.12 * life))
-                pygame.draw.line(
-                    overlay,
-                    (*trace.color, int(58 + 82 * life)),
+                self.draw_laser_segment_sprite(
+                    frame,
                     start,
                     end,
-                    outer_width,
+                    trace.color,
+                    trace.width,
+                    base_width,
                 )
-                pygame.draw.line(
-                    overlay,
-                    (*config.LASER_TRACE_CORE, int(110 + 105 * life)),
-                    start + offset,
-                    end + offset,
-                    mid_width,
-                )
-                pygame.draw.line(
-                    overlay,
-                    (*config.LASER_TRACE_CORE, int(96 + 92 * life)),
-                    start - offset,
-                    end - offset,
-                    mid_width,
-                )
-                pygame.draw.line(
-                    overlay,
-                    (*trace.color, int(170 + 70 * life)),
-                    start,
-                    end,
-                    core_width,
-                )
-            muzzle = trace.points[0]
-            pygame.draw.circle(
-                overlay,
-                (*trace.color, int(130 + 80 * life)),
-                muzzle,
-                max(8, trace.width),
-                0,
-            )
-            for impact in trace.impact_points:
-                impact_radius = max(trace.width + 4, 10)
-                pygame.draw.circle(
-                    overlay,
-                    (*config.LASER_TRACE_CORE, int(118 + 105 * life)),
-                    impact,
-                    impact_radius,
-                )
-                pygame.draw.circle(
-                    overlay,
-                    (*trace.color, int(178 + 65 * life)),
-                    impact,
-                    max(4, impact_radius // 2),
-                    2,
-                )
-        self.screen.blit(overlay, (0, 0))
 
     def draw_room_specials(self) -> None:
         room = self.current_room_state
@@ -8385,15 +8264,10 @@ class Game:
                 if room.room_event.anchor is not None
                 else pygame.Vector2(self.arena_rect().center)
             )
-            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.008)
-            pygame.draw.circle(
-                self.screen,
-                config.NUKE_BORDER_COLOR,
-                center,
-                int(56 + pulse * 10),
-                2,
-            )
-            warning = self.small_font.render("\u6838\u5f39", True, config.NUKE_BORDER_COLOR)
+            phase = (math.sin(pygame.time.get_ticks() * 0.008) + 1.0) * 0.5
+            frame = self.effect_frame(self.nuke_event_frames, phase)
+            self.blit_effect_frame(frame, center)
+            warning = self.small_font.render("核弹", True, config.NUKE_BORDER_COLOR)
             self.screen.blit(
                 warning,
                 warning.get_rect(center=(center.x, center.y - 68)),
@@ -8401,6 +8275,7 @@ class Game:
         elif (
             room.room_event is not None
             and room.room_event.key == "elite_turret"
+            and not room.room_event.spawned
             and not room.room_event.completed
         ):
             center = (
@@ -8408,14 +8283,9 @@ class Game:
                 if room.room_event.anchor is not None
                 else pygame.Vector2(self.arena_rect().center)
             )
-            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.009)
-            pygame.draw.circle(
-                self.screen,
-                config.TURRET_ELITE_COLOR,
-                center,
-                int(46 + pulse * 8),
-                2,
-            )
+            phase = (math.sin(pygame.time.get_ticks() * 0.009) + 1.0) * 0.5
+            frame = self.effect_frame(self.elite_turret_event_frames, phase)
+            self.blit_effect_frame(frame, center)
             warning = self.small_font.render("炮塔核心", True, config.TURRET_ELITE_COLOR)
             self.screen.blit(
                 warning,
@@ -8423,24 +8293,20 @@ class Game:
             )
         elif room.room_type == "treasure" and not room.chest_opened:
             pos = self.get_room_feature_anchor(room)
-            chest = pygame.Rect(0, 0, 68, 48)
-            chest.center = pos
-            pygame.draw.rect(self.screen, (118, 88, 38), chest, border_radius=10)
-            pygame.draw.rect(
-                self.screen, config.CREDIT_COLOR, chest, 3, border_radius=10
-            )
-            pygame.draw.rect(
-                self.screen,
-                (255, 236, 150),
-                (chest.left, chest.centery - 4, chest.width, 8),
-                border_radius=4,
+            sprite = self.map_sprites.get("treasure")
+            self.blit_anchored_surface(
+                sprite,
+                pos,
+                MAP_SPRITE_SPECS["treasure"]["anchor"],
             )
         elif room.room_type == "boss" and room.exit_active:
             pos = self.get_room_feature_anchor(room)
-            pygame.draw.circle(self.screen, (110, 170, 255), pos, 34, 3)
-            pygame.draw.circle(self.screen, (70, 120, 210), pos, 18, 2)
-            text = self.small_font.render("出口", True, config.TEXT_COLOR)
-            self.screen.blit(text, text.get_rect(center=(pos.x, pos.y + 54)))
+            sprite = self.map_sprites.get("exit_active")
+            self.blit_anchored_surface(
+                sprite,
+                pos,
+                MAP_SPRITE_SPECS["exit_active"]["anchor"],
+            )
 
     def draw_hud_panel(
         self, rect: pygame.Rect, border_color: tuple[int, int, int] | None = None

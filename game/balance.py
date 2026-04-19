@@ -42,7 +42,7 @@ SHOP_OFFER_POOL = (
     ShopOfferTemplate("accuracy", "瞄具微调", "子弹偏移 -18%，准度提升", 28),
     ShopOfferTemplate("shotgun_range", "加长枪膛", "子弹距离增加，扩散略微收束", 28),
     ShopOfferTemplate("basketball_training", "篮球实习生", "坤坤：篮球体积增大，速度 +10%", 28),
-    ShopOfferTemplate("what_can_i_say", "what can i say", "曼巴重击眩晕延长，扇形角度增大", 30),
+    ShopOfferTemplate("what_can_i_say", "what can i say", "曼巴重击眩晕延长，角度增大", 30),
     ShopOfferTemplate("crit_rate", "脆弱扫描", "暴击率 +5%", 30),
     ShopOfferTemplate("crit_damage", "高压穿芯", "暴击伤害 +15%", 32),
     ShopOfferTemplate("speed", "动力靴组", "移动速度 +18", 24),

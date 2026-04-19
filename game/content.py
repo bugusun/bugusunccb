@@ -164,7 +164,7 @@ CHARACTER_SKILLS = {
     "pulse": CharacterSkill(
         "pulse",
         "电弧脉冲",
-        "Q：释放脉冲，清除周围敌方子弹并推开敌人",
+        "Q：释放脉冲，清除周围敌方子弹并推开敌人；长按Q消耗 100 晶片释放全屏脉冲，每层限一次",
         config.PULSE_COOLDOWN,
         "脉冲",
     ),
