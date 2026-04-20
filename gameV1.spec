@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+project_root = Path(SPECPATH)
+datas = []
+resource_dir = project_root / "resources"
+if resource_dir.exists():
+    datas.append((str(resource_dir), "resources"))
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=[str(project_root)],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

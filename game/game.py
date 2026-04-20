@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -206,6 +207,21 @@ MAP_SPRITE_SPECS = {
 }
 
 
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def runtime_resource_root() -> Path:
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    return Path(bundle_root) if bundle_root else project_root()
+
+
+def runtime_record_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return project_root()
+
+
 @dataclass
 class ShopOffer:
     key: str
@@ -396,8 +412,9 @@ class Game:
         self.selected_character = CHARACTERS[0]
         self.selected_weapon = WEAPONS[0]
         self.title_panel = "main"
-        self.record_path = Path(__file__).resolve().parents[1] / "highscore.json"
-        self.resources_path = Path(__file__).resolve().parents[1] / "resources"
+        self.record_path = runtime_record_root() / "highscore.json"
+        self.record_path.parent.mkdir(parents=True, exist_ok=True)
+        self.resources_path = runtime_resource_root() / "resources"
         self.sound_path = self.resources_path / "sound"
         self.effects_path = self.resources_path / "effects"
         self.character_sprites = self.load_named_surfaces(

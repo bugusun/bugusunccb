@@ -7,3 +7,7 @@ __pycache__/
 game/__pycache__/
 *.pyc
 highscore.json
+task_plan.md
+progress.md
+findings.md
+CHANGELOG.md
